@@ -1,0 +1,21 @@
+[package]
+name = "bucketlang"
+version = "0.1.0"
+edition = "2021"
+description = "Bucketlang — addressable expression slots with contracts, graph, and bkt CLI"
+license = "MIT"
+
+[[bin]]
+name = "bkt"
+path = "src/main.rs"
+
+[lib]
+name = "bucketlang"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror = "2.0.19"

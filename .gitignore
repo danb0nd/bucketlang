@@ -1,0 +1,28 @@
+# Build
+/target/
+**/*.rs.bk
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Secrets / local env (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets/
+.secrets/
+
+# Local scratch / debug dumps
+err.txt
+*.log
+graph.svg
+graph.png
+/tmp/

@@ -1,0 +1,18 @@
+@test greet() == "hi"
+greet() -> Str "return a greeting" {
+  "hi"
+}
+
+@test is_pos(3) == true
+@test is_pos(-1) == false
+is_pos(x: Num) -> Bool "is x positive" {
+  x > 0
+}
+
+@entry
+main(name: Str) -> Str "greet by name" {
+  msg = "hello, " + name
+  print(msg)
+  print(is_pos(5))
+  msg
+}

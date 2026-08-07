@@ -1,0 +1,20 @@
+add_one(x: Num) -> Num "adds one to the input" {
+  x + 1
+}
+
+double(x: Num) -> Num "doubles the input" {
+  x * 2
+}
+
+@test combo(5) == 12
+@test combo(0) == 2
+combo(x: Num) -> Num "add one, then double" {
+  double(add_one(x))
+}
+
+@entry
+main(x: Num) -> Num "locals + print combo" {
+  y = add_one(x)
+  z = double(y)
+  print(z)
+}
