@@ -167,7 +167,8 @@ Profiles: default **dev** includes `#t…` tests; **`--release`** strips them (f
 | [`examples/types.bkt`](examples/types.bkt) | `Str` / `Bool` |
 | [`examples/dans_first_bkt.bkt`](examples/dans_first_bkt.bkt) | Minimal first program |
 
-Full syntax: [`SPEC.md`](SPEC.md).
+Full syntax: [`SPEC.md`](SPEC.md).  
+**Language inventory (what exists today):** [`LANGUAGE.md`](LANGUAGE.md).
 
 ---
 
