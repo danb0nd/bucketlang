@@ -56,7 +56,6 @@ dependencies = [
 name = "bkt"
 version = "0.1.0"
 dependencies = [
- "bucket-harness",
  "bucketlang",
  "clap",
  "serde",
@@ -70,15 +69,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
-]
-
-[[package]]
-name = "bucket-harness"
-version = "0.1.0"
-dependencies = [
- "bucketlang",
- "serde",
- "serde_json",
 ]
 
 [[package]]
