@@ -202,6 +202,15 @@ pub struct RawProgram {
     pub buckets: Vec<RawBucket>,
 }
 
+/// Byte range of a bucket body inside its own source file, between the braces
+/// and excluding them. Only meaningful for the file the bucket was parsed from,
+/// which is why linking clears it (see `merge_registry`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RawBucket {
     pub explicit_addr: Option<String>,
@@ -211,6 +220,7 @@ pub struct RawBucket {
     pub body: Expr,
     pub is_entry: bool,
     pub tests: Vec<TestAnn>,
+    pub body_span: Option<Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -241,4 +251,8 @@ pub struct Bucket {
     pub subject: Option<String>,
     /// Test buckets from `@test_error` — pass iff body evaluation errors.
     pub expect_error: bool,
+    /// Where this bucket's body sits in the source it was parsed from.
+    /// `None` for cores, synthesized tests, and anything linked in from an
+    /// import — for those there is no span into the file being edited.
+    pub body_span: Option<Span>,
 }

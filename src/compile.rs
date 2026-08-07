@@ -297,7 +297,11 @@ fn merge_registry(into: &mut Registry, from: &Registry) -> Result<()> {
                 "address collision while linking: {id}"
             )));
         }
-        into.buckets.insert(id.clone(), b.clone());
+        // The span points into the imported file, not the one being compiled.
+        // Drop it so an edit can never splice a linked bucket into the importer.
+        let mut b = b.clone();
+        b.body_span = None;
+        into.buckets.insert(id.clone(), b);
     }
     for (label, id) in &from.label_to_id {
         if into.label_to_id.contains_key(label) {
@@ -677,6 +681,7 @@ fn lower(
             complexity,
             subject: None,
             expect_error: false,
+            body_span: rb.body_span,
         };
         reg.buckets.insert(addr.clone(), bucket);
     }
@@ -744,6 +749,8 @@ fn lower(
                     complexity,
                     subject: Some(subject.clone()),
                     expect_error: test.expect_error,
+                    // Synthesized from a @test annotation; no body of its own.
+                    body_span: None,
                 };
                 reg.test_ids.push(tid.clone());
                 reg.buckets.insert(tid, bucket);

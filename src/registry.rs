@@ -35,6 +35,7 @@ impl Registry {
         ret: Type,
     ) {
         let bucket = Bucket {
+            body_span: None,
             address: addr.into(),
             label: label.map(|s| s.into()),
             desc: desc.into(),

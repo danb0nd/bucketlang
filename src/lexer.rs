@@ -7,6 +7,9 @@ pub struct Token {
     pub text: String,
     pub line: usize,
     pub col: usize,
+    /// Byte offset of this token's first character in the source.
+    /// Lets the parser record spans so edits can splice structurally.
+    pub start: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -54,6 +57,14 @@ pub enum TokenKind {
 pub fn tokenize(src: &str) -> Result<Vec<Token>> {
     let mut tokens = Vec::new();
     let chars: Vec<char> = src.chars().collect();
+    // Byte offset of each char, so token positions survive multi-byte input.
+    let mut byte_at: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    let mut b = 0;
+    for c in &chars {
+        byte_at.push(b);
+        b += c.len_utf8();
+    }
+    byte_at.push(b);
     let mut i = 0;
     let mut line = 1;
     let mut col = 1;
@@ -61,6 +72,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
     while i < chars.len() {
         let start_line = line;
         let start_col = col;
+        let start_byte = byte_at[i];
         let c = chars[i];
 
         if c == ' ' || c == '\t' || c == '\r' {
@@ -88,6 +100,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: "->".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 2;
             col += 2;
@@ -100,6 +113,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     text: "==".into(),
                     line: start_line,
                     col: start_col,
+                    start: start_byte,
                 });
                 i += 2;
                 col += 2;
@@ -111,6 +125,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     text: "=>".into(),
                     line: start_line,
                     col: start_col,
+                    start: start_byte,
                 });
                 i += 2;
                 col += 2;
@@ -121,6 +136,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: "=".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 1;
             col += 1;
@@ -133,6 +149,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     text: "!=".into(),
                     line: start_line,
                     col: start_col,
+                    start: start_byte,
                 });
                 i += 2;
                 col += 2;
@@ -143,6 +160,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: "!".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 1;
             col += 1;
@@ -155,6 +173,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     text: "<=".into(),
                     line: start_line,
                     col: start_col,
+                    start: start_byte,
                 });
                 i += 2;
                 col += 2;
@@ -165,6 +184,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: "<".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 1;
             col += 1;
@@ -177,6 +197,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     text: ">=".into(),
                     line: start_line,
                     col: start_col,
+                    start: start_byte,
                 });
                 i += 2;
                 col += 2;
@@ -187,6 +208,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: ">".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 1;
             col += 1;
@@ -198,6 +220,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: "&&".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 2;
             col += 2;
@@ -210,6 +233,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     text: "||".into(),
                     line: start_line,
                     col: start_col,
+                    start: start_byte,
                 });
                 i += 2;
                 col += 2;
@@ -221,6 +245,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     text: "|>".into(),
                     line: start_line,
                     col: start_col,
+                    start: start_byte,
                 });
                 i += 2;
                 col += 2;
@@ -231,6 +256,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: "|".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 1;
             col += 1;
@@ -260,6 +286,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: format!("@{word}"),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             col += j - i;
             i = j;
@@ -292,6 +319,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text,
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             col += j - i;
             i = j;
@@ -334,6 +362,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: out,
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             col += j - i + 1;
             i = j + 1;
@@ -356,6 +385,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text,
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             col += j - i;
             i = j;
@@ -372,6 +402,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text,
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             col += j - i;
             i = j;
@@ -384,6 +415,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: "**".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 2;
             col += 2;
@@ -397,6 +429,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     text: "::".into(),
                     line: start_line,
                     col: start_col,
+                    start: start_byte,
                 });
                 i += 2;
                 col += 2;
@@ -407,6 +440,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 text: ":".into(),
                 line: start_line,
                 col: start_col,
+                start: start_byte,
             });
             i += 1;
             col += 1;
@@ -440,6 +474,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
             text: c.to_string(),
             line: start_line,
             col: start_col,
+            start: start_byte,
         });
         i += 1;
         col += 1;
@@ -450,6 +485,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
         text: String::new(),
         line,
         col,
+        start: src.len(),
     });
     Ok(tokens)
 }

@@ -3,7 +3,10 @@ use bucketlang::canonical::canonical_repr;
 use bucketlang::compile::{compile_file, compile_with_base, BuildProfile, CompileOptions};
 use bucketlang::eval::eval_bucket;
 use bucketlang::graph::{build_graph, to_dot};
-use bucketlang::harness::{build_context, run_subject_tests, splice_bucket_body, EditResult};
+use bucketlang::harness::{
+    build_context, only_target_changed, run_subject_tests, splice_bucket_body, user_hashes,
+    EditResult,
+};
 use bucketlang::lint::unused_warnings;
 use bucketlang::render::{render_labelled, render_raw};
 use bucketlang::value::{parse_arg, Value};
@@ -565,28 +568,60 @@ fn real_main() -> Result<(), String> {
             non_strict,
         } => {
             let src = read_source(&file)?;
-            let new_src = splice_bucket_body(&src, &bucket, &body).map_err(|e| e.to_string())?;
-            let compiled = match if file.as_os_str() == "-" {
-                bucketlang::compile::compile(&new_src, opts(non_strict, false))
-            } else {
-                compile_with_base(&new_src, opts(non_strict, false), &file)
-            } {
-                Ok(c) => c,
-                Err(e) => {
-                    let result = EditResult {
-                        ok: false,
-                        bucket: bucket.clone(),
-                        tests_run: 0,
-                        tests_passed: 0,
-                        error: Some(e.to_string()),
-                        diff: None,
-                        prints: None,
-                        source: None,
-                    };
-                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
-                    return Err(e.to_string());
+
+            // Compile before splicing: the target is resolved to an address through
+            // the registry, and the splice uses that bucket's recorded span. Editing
+            // therefore needs the file to compile as it stands.
+            let compile_src = |s: &str| {
+                if file.as_os_str() == "-" {
+                    bucketlang::compile::compile(s, opts(non_strict, false))
+                } else {
+                    compile_with_base(s, opts(non_strict, false), &file)
                 }
             };
+            let fail = |msg: String| {
+                let result = EditResult {
+                    ok: false,
+                    bucket: bucket.clone(),
+                    tests_run: 0,
+                    tests_passed: 0,
+                    error: Some(msg.clone()),
+                    diff: None,
+                    prints: None,
+                    source: None,
+                };
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                msg
+            };
+
+            let base = match compile_src(&src) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Err(fail(format!("source does not compile before edit: {e}")));
+                }
+            };
+            let before = user_hashes(&base.registry);
+
+            let new_src = match splice_bucket_body(&src, &base.registry, &bucket, &body) {
+                Ok(s) => s,
+                Err(e) => return Err(fail(e.to_string())),
+            };
+            let compiled = match compile_src(&new_src) {
+                Ok(c) => c,
+                Err(e) => return Err(fail(e.to_string())),
+            };
+
+            // Atomicity gate: the splice must have touched exactly the target.
+            let target_addr = base
+                .registry
+                .resolve_target(bucket.trim())
+                .unwrap_or_else(|| bucket.clone());
+            if let Err(e) =
+                only_target_changed(&before, &user_hashes(&compiled.registry), &target_addr)
+            {
+                return Err(fail(e));
+            }
+
             let mut sink = io::sink();
             match run_subject_tests(&compiled.registry, &bucket, &mut sink) {
                 Ok((run, passed)) => {

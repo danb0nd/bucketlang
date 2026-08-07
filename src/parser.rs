@@ -398,8 +398,12 @@ impl<'a> Parser<'a> {
             None
         };
 
+        // Span the body so edits can splice by offset instead of searching text.
+        // `{` is one byte, so the body starts immediately after it.
+        let open = self.peek().start;
         self.expect(TokenKind::LBrace)?;
         let body = self.parse_block_body()?;
+        let close = self.peek().start;
         self.expect(TokenKind::RBrace)?;
 
         Ok(RawBucket {
@@ -410,6 +414,10 @@ impl<'a> Parser<'a> {
             body,
             is_entry: false,
             tests: Vec::new(),
+            body_span: Some(Span {
+                start: open + 1,
+                end: close,
+            }),
         })
     }
 
