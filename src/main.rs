@@ -1,6 +1,6 @@
 use bucketlang::ast::BucketKind;
 use bucketlang::canonical::canonical_repr;
-use bucketlang::compile::{compile, BuildProfile, CompileOptions};
+use bucketlang::compile::{compile_file, compile_with_base, BuildProfile, CompileOptions};
 use bucketlang::eval::eval_bucket;
 use bucketlang::graph::{build_graph, to_dot};
 use bucketlang::harness::{build_context, run_subject_tests, splice_bucket_body, EditResult};
@@ -177,6 +177,15 @@ fn opts(non_strict: bool, release: bool) -> CompileOptions {
     }
 }
 
+fn compile_input(file: &PathBuf, o: CompileOptions) -> Result<bucketlang::CompileResult, String> {
+    if file.as_os_str() == "-" {
+        let src = read_source(file)?;
+        bucketlang::compile::compile(&src, o).map_err(|e| e.to_string())
+    } else {
+        compile_file(file, o).map_err(|e| e.to_string())
+    }
+}
+
 fn main() -> ExitCode {
     install_broken_pipe_hook();
     match real_main() {
@@ -211,8 +220,7 @@ fn real_main() -> Result<(), String> {
             release,
             non_strict,
         } => {
-            let src = read_source(&file)?;
-            let compiled = compile(&src, opts(non_strict, release)).map_err(|e| e.to_string())?;
+            let compiled = compile_input(&file, opts(non_strict, release))?;
             if compiled.registry.entry.is_none() {
                 return Err("missing @entry (required for check)".into());
             }
@@ -244,8 +252,7 @@ fn real_main() -> Result<(), String> {
             release,
             non_strict,
         } => {
-            let src = read_source(&file)?;
-            let compiled = compile(&src, opts(non_strict, release)).map_err(|e| e.to_string())?;
+            let compiled = compile_input(&file, opts(non_strict, release))?;
             let reg = &compiled.registry;
             emit_warnings(reg, no_warn);
             let show_tests = show_tests || verbose;
@@ -341,8 +348,7 @@ fn real_main() -> Result<(), String> {
             release,
             non_strict,
         } => {
-            let src = read_source(&file)?;
-            let compiled = compile(&src, opts(non_strict, release)).map_err(|e| e.to_string())?;
+            let compiled = compile_input(&file, opts(non_strict, release))?;
             let reg = &compiled.registry;
             let g = build_graph(reg);
 
@@ -530,8 +536,7 @@ fn real_main() -> Result<(), String> {
             depth,
             non_strict,
         } => {
-            let src = read_source(&file)?;
-            let compiled = compile(&src, opts(non_strict, false)).map_err(|e| e.to_string())?;
+            let compiled = compile_input(&file, opts(non_strict, false))?;
             let mut pack =
                 build_context(&compiled.registry, &bucket, depth).map_err(|e| e.to_string())?;
             pack.file_hint = file.display().to_string();
@@ -547,7 +552,11 @@ fn real_main() -> Result<(), String> {
         } => {
             let src = read_source(&file)?;
             let new_src = splice_bucket_body(&src, &bucket, &body).map_err(|e| e.to_string())?;
-            let compiled = match compile(&new_src, opts(non_strict, false)) {
+            let compiled = match if file.as_os_str() == "-" {
+                bucketlang::compile::compile(&new_src, opts(non_strict, false))
+            } else {
+                compile_with_base(&new_src, opts(non_strict, false), &file)
+            } {
                 Ok(c) => c,
                 Err(e) => {
                     let result = EditResult {

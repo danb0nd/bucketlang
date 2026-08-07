@@ -37,6 +37,7 @@ pub enum TokenKind {
     Pipe,
     PipePipe,
     Colon,
+    ColonColon,
     Comma,
     LParen,
     RParen,
@@ -263,7 +264,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 ));
             }
             while j < chars.len()
-                && (chars[j].is_ascii_alphanumeric() || chars[j] == '_' || chars[j] == '.')
+                && (chars[j].is_ascii_alphanumeric()
+                    || chars[j] == '_'
+                    || chars[j] == '.'
+                    || chars[j] == '/')
             {
                 j += 1;
             }
@@ -371,12 +375,34 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
             continue;
         }
 
+        if c == ':' {
+            if i + 1 < chars.len() && chars[i + 1] == ':' {
+                tokens.push(Token {
+                    kind: TokenKind::ColonColon,
+                    text: "::".into(),
+                    line: start_line,
+                    col: start_col,
+                });
+                i += 2;
+                col += 2;
+                continue;
+            }
+            tokens.push(Token {
+                kind: TokenKind::Colon,
+                text: ":".into(),
+                line: start_line,
+                col: start_col,
+            });
+            i += 1;
+            col += 1;
+            continue;
+        }
+
         let kind = match c {
             '+' => TokenKind::Plus,
             '-' => TokenKind::Minus,
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
-            ':' => TokenKind::Colon,
             ',' => TokenKind::Comma,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,

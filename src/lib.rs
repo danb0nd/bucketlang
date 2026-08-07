@@ -13,7 +13,7 @@ pub mod registry;
 pub mod render;
 pub mod value;
 
-pub use compile::{compile, BuildProfile, CompileOptions, CompileResult};
+pub use compile::{compile, compile_file, compile_with_base, BuildProfile, CompileOptions, CompileResult};
 pub use error::{Error, Result};
 pub use lint::unused_warnings;
 pub use value::Value;

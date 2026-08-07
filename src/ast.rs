@@ -168,6 +168,8 @@ pub struct RawTypeAlias {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RawProgram {
+    pub module: Option<String>,
+    pub imports: Vec<String>,
     pub aliases: Vec<RawTypeAlias>,
     pub buckets: Vec<RawBucket>,
 }

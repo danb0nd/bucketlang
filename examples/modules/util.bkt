@@ -1,0 +1,11 @@
+module util
+
+@test double(21) == 42
+double(x: Num) -> Num "multiply by two" {
+  x * 2
+}
+
+@test square(5) == 25
+square(x: Num) -> Num "x squared" {
+  x * x
+}

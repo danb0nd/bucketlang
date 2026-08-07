@@ -1,0 +1,13 @@
+module app
+import util
+
+@test demo() == 42
+demo() -> Num "use util::double" {
+  util::double(21)
+}
+
+@entry
+main() -> Num "print util::square(5)" {
+  print(util::square(5))
+  util::double(3)
+}

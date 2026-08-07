@@ -134,6 +134,23 @@ type Points = List[Point]
 
 Aliases expand during compile. Variant **tags must be unique** across the program. Cycles / unknown names error.
 
+### Modules + imports
+
+```text
+module util
+double(x: Num) -> Num "…" { x * 2 }
+
+module app
+import util
+@entry
+main() -> Num "…" { util::double(3) }
+```
+
+- `import name` loads `name.bkt` or `name/mod.bkt` beside the importing file.
+- With `module util`, user/test addresses mint as `#util/b…` / `#util/t…` (unprefixed `#b…` if no module).
+- Calls: `util::double(...)` or `#util/b00000001(...)`.
+- Imported `@entry` is ignored; root entry wins. Imported `@test`s still run in dev.
+
 Buckets may call themselves (recursion) or each other; eval aborts past depth 256.
 
 ### Address spaces

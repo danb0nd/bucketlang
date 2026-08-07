@@ -7,6 +7,7 @@ use crate::parser::Parser;
 use crate::registry::Registry;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 struct CtorInfo {
@@ -44,20 +45,176 @@ pub struct CompileResult {
     pub raw_buckets: Vec<RawBucket>,
     /// Resolved type aliases (RHS fully expanded).
     pub type_aliases: BTreeMap<String, Type>,
+    pub module: Option<String>,
+    pub imports: Vec<String>,
 }
 
+/// Compile a single source string (no `import` resolution).
 pub fn compile(source: &str, opts: CompileOptions) -> Result<CompileResult> {
+    let mut stack = BTreeSet::new();
+    compile_source(source, opts, None, &mut stack)
+}
+
+/// Compile source as if it lived at `base_file` (resolves `import`s relative to that path).
+pub fn compile_with_base(
+    source: &str,
+    opts: CompileOptions,
+    base_file: &Path,
+) -> Result<CompileResult> {
+    let mut stack = BTreeSet::new();
+    compile_source(source, opts, Some(base_file), &mut stack)
+}
+
+/// Compile a `.bkt` file and recursively link `import`s.
+pub fn compile_file(path: &Path, opts: CompileOptions) -> Result<CompileResult> {
+    let mut stack = BTreeSet::new();
+    compile_path(path, opts, &mut stack)
+}
+
+fn compile_path(
+    path: &Path,
+    opts: CompileOptions,
+    stack: &mut BTreeSet<PathBuf>,
+) -> Result<CompileResult> {
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !stack.insert(canon.clone()) {
+        return Err(Error::msg(format!(
+            "import cycle involving {}",
+            path.display()
+        )));
+    }
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| Error::msg(format!("read {}: {e}", path.display())))?;
+    let result = compile_source(&source, opts, Some(path), stack)?;
+    stack.remove(&canon);
+    Ok(result)
+}
+
+fn resolve_import_path(from_file: &Path, name: &str) -> Result<PathBuf> {
+    let dir = from_file.parent().unwrap_or_else(|| Path::new("."));
+    let candidates = [
+        dir.join(format!("{name}.bkt")),
+        dir.join(name).join("mod.bkt"),
+        dir.join(name).join(format!("{name}.bkt")),
+    ];
+    for c in &candidates {
+        if c.is_file() {
+            return Ok(c.clone());
+        }
+    }
+    Err(Error::msg(format!(
+        "cannot find module '{name}' for import (tried {}, {}, {})",
+        candidates[0].display(),
+        candidates[1].display(),
+        candidates[2].display()
+    )))
+}
+
+fn compile_source(
+    source: &str,
+    opts: CompileOptions,
+    path: Option<&Path>,
+    stack: &mut BTreeSet<PathBuf>,
+) -> Result<CompileResult> {
     let tokens = tokenize(source)?;
     let mut parser = Parser::new(&tokens);
     let program = parser.parse_program()?;
-    let type_aliases = resolve_aliases(&program)?;
-    let registry = lower(&program.buckets, &type_aliases, opts)?;
+
+    if !program.imports.is_empty() && path.is_none() {
+        return Err(Error::msg(
+            "import requires compiling from a file path (not a raw string)",
+        ));
+    }
+
+    let mut prelude = Registry::with_cores();
+    let mut merged_aliases = BTreeMap::new();
+    for imp in &program.imports {
+        let imp_path = resolve_import_path(path.unwrap(), imp)?;
+        let imported = compile_path(&imp_path, opts, stack)?;
+        match &imported.module {
+            Some(m) if m == imp => {}
+            Some(m) => {
+                return Err(Error::msg(format!(
+                    "import '{imp}' but file declares module '{m}'"
+                )));
+            }
+            None => {
+                return Err(Error::msg(format!(
+                    "imported file {} must declare `module {imp}`",
+                    imp_path.display()
+                )));
+            }
+        }
+        merge_registry(&mut prelude, &imported.registry)?;
+        for (k, v) in imported.type_aliases {
+            if merged_aliases.contains_key(&k) {
+                return Err(Error::msg(format!(
+                    "duplicate type alias '{k}' from import '{imp}'"
+                )));
+            }
+            merged_aliases.insert(k, v);
+        }
+    }
+
+    let local_aliases = resolve_aliases(&program)?;
+    for (k, v) in local_aliases {
+        if merged_aliases.contains_key(&k) {
+            return Err(Error::msg(format!(
+                "type alias '{k}' conflicts with an imported alias"
+            )));
+        }
+        merged_aliases.insert(k, v);
+    }
+
+    let registry = lower(
+        &program.buckets,
+        &merged_aliases,
+        opts,
+        program.module.as_deref(),
+        prelude,
+    )?;
+
     Ok(CompileResult {
         registry,
         tokens,
         raw_buckets: program.buckets,
-        type_aliases,
+        type_aliases: merged_aliases,
+        module: program.module,
+        imports: program.imports,
     })
+}
+
+fn merge_registry(into: &mut Registry, from: &Registry) -> Result<()> {
+    for (id, b) in &from.buckets {
+        if b.kind == BucketKind::Core {
+            continue;
+        }
+        if into.buckets.contains_key(id) {
+            return Err(Error::msg(format!(
+                "address collision while linking: {id}"
+            )));
+        }
+        into.buckets.insert(id.clone(), b.clone());
+    }
+    for (label, id) in &from.label_to_id {
+        if into.label_to_id.contains_key(label) {
+            // allow same qualified label mapping to same id only
+            if into.label_to_id.get(label) != Some(id) {
+                return Err(Error::msg(format!(
+                    "label collision while linking: {label}"
+                )));
+            }
+        } else {
+            into.label_to_id.insert(label.clone(), id.clone());
+        }
+    }
+    for tid in &from.test_ids {
+        if !into.test_ids.contains(tid) {
+            into.test_ids.push(tid.clone());
+        }
+    }
+    // do not take entry from imports
+    Ok(())
 }
 
 fn resolve_aliases(program: &RawProgram) -> Result<BTreeMap<String, Type>> {
@@ -161,18 +318,37 @@ fn lower(
     raw: &[RawBucket],
     aliases: &BTreeMap<String, Type>,
     opts: CompileOptions,
+    module: Option<&str>,
+    mut reg: Registry,
 ) -> Result<Registry> {
     let ctors = collect_ctors(aliases)?;
-    let mut reg = Registry::with_cores();
     let mut next_b: u64 = 1;
     let mut next_t: u64 = 1;
     let mut claimed: BTreeSet<String> = BTreeSet::new();
     let mut allocated: Vec<(String, RawBucket)> = Vec::new();
 
+    // Claim addresses already present from imports
+    for id in reg.buckets.keys() {
+        claimed.insert(id.clone());
+    }
+
     let entry_count = raw.iter().filter(|b| b.is_entry).count();
     if entry_count > 1 {
         return Err(Error::msg("multiple @entry annotations"));
     }
+
+    let mint_user = |n: u64| -> String {
+        match module {
+            Some(m) => format!("#{m}/b{n:08x}"),
+            None => format!("#b{n:08x}"),
+        }
+    };
+    let mint_test = |n: u64| -> String {
+        match module {
+            Some(m) => format!("#{m}/t{n:08x}"),
+            None => format!("#t{n:08x}"),
+        }
+    };
 
     for rb in raw {
         let mut rb = rb.clone();
@@ -202,19 +378,15 @@ fn lower(
         }
 
         let addr = if let Some(a) = &rb.explicit_addr {
-            if !a.starts_with("#b") {
-                return Err(Error::msg(format!(
-                    "manual address must be in #b space, got {a}"
-                )));
+            let normalized = normalize_manual_addr(a, module)?;
+            if claimed.contains(&normalized) || reg.buckets.contains_key(&normalized) {
+                return Err(Error::msg(format!("address already taken: {normalized}")));
             }
-            if claimed.contains(a) || reg.buckets.contains_key(a) {
-                return Err(Error::msg(format!("address already taken: {a}")));
-            }
-            claimed.insert(a.clone());
-            a.clone()
+            claimed.insert(normalized.clone());
+            normalized
         } else {
             loop {
-                let cand = format!("#b{next_b:08x}");
+                let cand = mint_user(next_b);
                 next_b += 1;
                 if !claimed.contains(&cand) {
                     claimed.insert(cand.clone());
@@ -225,6 +397,10 @@ fn lower(
 
         if let Some(label) = &rb.label {
             reg.label_to_id.insert(label.clone(), addr.clone());
+            if let Some(m) = module {
+                let q = format!("{m}::{label}");
+                reg.label_to_id.insert(q, addr.clone());
+            }
         }
         if rb.is_entry {
             if opts.strict && (rb.label.is_none() || rb.desc.as_ref().map(|d| d.trim().is_empty()).unwrap_or(true))
@@ -275,7 +451,7 @@ fn lower(
         for (addr, rb) in &allocated {
             let subject = rb.label.clone().unwrap_or_else(|| addr.clone());
             for test in &rb.tests {
-                let tid = format!("#t{next_t:08x}");
+                let tid = mint_test(next_t);
                 next_t += 1;
                 known.insert(tid.clone());
 
@@ -343,6 +519,32 @@ fn lower(
     }
 
     Ok(reg)
+}
+
+fn normalize_manual_addr(addr: &str, module: Option<&str>) -> Result<String> {
+    match module {
+        None => {
+            if addr.starts_with("#b") && !addr.contains('/') {
+                Ok(addr.to_string())
+            } else {
+                Err(Error::msg(format!(
+                    "manual address must look like #b…, got {addr}"
+                )))
+            }
+        }
+        Some(m) => {
+            let prefix = format!("#{m}/b");
+            if addr.starts_with(&prefix) {
+                Ok(addr.to_string())
+            } else if addr.starts_with("#b") && !addr.contains('/') {
+                Ok(format!("#{m}/{}", &addr[1..]))
+            } else {
+                Err(Error::msg(format!(
+                    "manual address in module {m} must be #b… or #{m}/b…, got {addr}"
+                )))
+            }
+        }
+    }
 }
 
 fn resolve_name(target: &str, reg: &Registry, known: &BTreeSet<String>) -> Result<String> {

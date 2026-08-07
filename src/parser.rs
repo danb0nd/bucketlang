@@ -40,16 +40,114 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_program(&mut self) -> Result<RawProgram> {
+        let mut module = None;
+        let mut imports = Vec::new();
         let mut aliases = Vec::new();
         let mut buckets = Vec::new();
+
+        // Leading module / import decls
+        while self.peek().kind == TokenKind::Ident {
+            match self.peek().text.as_str() {
+                "module" => {
+                    if module.is_some() {
+                        let t = self.peek();
+                        return Err(Error::at(
+                            "parse",
+                            t.line,
+                            t.col,
+                            "duplicate module declaration",
+                        ));
+                    }
+                    if !aliases.is_empty() || !buckets.is_empty() {
+                        let t = self.peek();
+                        return Err(Error::at(
+                            "parse",
+                            t.line,
+                            t.col,
+                            "module must appear before types and buckets",
+                        ));
+                    }
+                    module = Some(self.parse_module_decl()?);
+                }
+                "import" => {
+                    if !aliases.is_empty() || !buckets.is_empty() {
+                        let t = self.peek();
+                        return Err(Error::at(
+                            "parse",
+                            t.line,
+                            t.col,
+                            "import must appear before types and buckets",
+                        ));
+                    }
+                    imports.push(self.parse_import_decl()?);
+                }
+                _ => break,
+            }
+        }
+
         while self.peek().kind != TokenKind::Eof {
             if self.peek().kind == TokenKind::Ident && self.peek().text == "type" {
                 aliases.push(self.parse_type_alias()?);
+            } else if self.peek().kind == TokenKind::Ident
+                && (self.peek().text == "module" || self.peek().text == "import")
+            {
+                let t = self.peek();
+                return Err(Error::at(
+                    "parse",
+                    t.line,
+                    t.col,
+                    "module/import must be at the top of the file",
+                ));
             } else {
                 buckets.push(self.parse_item()?);
             }
         }
-        Ok(RawProgram { aliases, buckets })
+        Ok(RawProgram {
+            module,
+            imports,
+            aliases,
+            buckets,
+        })
+    }
+
+    fn parse_module_decl(&mut self) -> Result<String> {
+        let t0 = self.peek().clone();
+        self.expect(TokenKind::Ident)?; // module
+        if t0.text != "module" {
+            return Err(Error::at("parse", t0.line, t0.col, "expected module"));
+        }
+        let name_tok = self.peek().clone();
+        if name_tok.kind != TokenKind::Ident {
+            return Err(Error::at(
+                "parse",
+                name_tok.line,
+                name_tok.col,
+                "expected module name",
+            ));
+        }
+        let name = self.bump().text.clone();
+        validate_ident(&name, name_tok.line, name_tok.col)?;
+        Ok(name)
+    }
+
+    fn parse_import_decl(&mut self) -> Result<String> {
+        let t0 = self.peek().clone();
+        self.expect(TokenKind::Ident)?; // import
+        if t0.text != "import" {
+            return Err(Error::at("parse", t0.line, t0.col, "expected import"));
+        }
+        let name_tok = self.peek().clone();
+        if name_tok.kind != TokenKind::Ident {
+            return Err(Error::at(
+                "parse",
+                name_tok.line,
+                name_tok.col,
+                "expected module name to import",
+            ));
+        }
+        let name = self.bump().text.clone();
+        validate_ident(&name, name_tok.line, name_tok.col)?;
+        Ok(name)
     }
 
     fn parse_type_alias(&mut self) -> Result<RawTypeAlias> {
@@ -130,22 +228,43 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_call_head(&mut self) -> Result<(String, Vec<Expr>)> {
-        let target = match self.peek().kind {
-            TokenKind::Ident | TokenKind::Address => self.bump().text.clone(),
-            _ => {
-                let t = self.peek();
-                return Err(Error::at(
-                    "parse",
-                    t.line,
-                    t.col,
-                    "expected call target in @test",
-                ));
-            }
-        };
+        let target = self.parse_path_name()?;
         self.expect(TokenKind::LParen)?;
         let args = self.parse_args()?;
         self.expect(TokenKind::RParen)?;
         Ok((target, args))
+    }
+
+    /// `name`, `mod::name`, or `#addr` / `#mod/b…`
+    fn parse_path_name(&mut self) -> Result<String> {
+        let t = self.peek().clone();
+        match t.kind {
+            TokenKind::Address => Ok(self.bump().text.clone()),
+            TokenKind::Ident => {
+                let mut path = self.bump().text.clone();
+                while self.peek().kind == TokenKind::ColonColon {
+                    self.bump();
+                    let nt = self.peek().clone();
+                    if nt.kind != TokenKind::Ident {
+                        return Err(Error::at(
+                            "parse",
+                            nt.line,
+                            nt.col,
+                            "expected name after '::'",
+                        ));
+                    }
+                    path.push_str("::");
+                    path.push_str(&self.bump().text);
+                }
+                Ok(path)
+            }
+            _ => Err(Error::at(
+                "parse",
+                t.line,
+                t.col,
+                "expected name or address",
+            )),
+        }
     }
 
     fn parse_bucket(&mut self) -> Result<RawBucket> {
@@ -691,35 +810,50 @@ impl<'a> Parser<'a> {
             TokenKind::LBracket => self.parse_list_lit(),
             TokenKind::LBrace => self.parse_record_lit(),
             TokenKind::Ident | TokenKind::Address => {
-                let target = self.bump().text.clone();
-                if target == "true" {
-                    return Ok(Expr::Bool(true));
+                if t.kind == TokenKind::Ident {
+                    let text = self.peek().text.clone();
+                    if text == "true" {
+                        self.bump();
+                        return Ok(Expr::Bool(true));
+                    }
+                    if text == "false" {
+                        self.bump();
+                        return Ok(Expr::Bool(false));
+                    }
+                    if text == "if" || text == "then" || text == "else" || text == "match" {
+                        return Err(Error::at(
+                            "parse",
+                            t.line,
+                            t.col,
+                            format!("unexpected keyword {text} in expression"),
+                        ));
+                    }
                 }
-                if target == "false" {
-                    return Ok(Expr::Bool(false));
-                }
-                if target == "if" || target == "then" || target == "else" {
-                    return Err(Error::at(
-                        "parse",
-                        t.line,
-                        t.col,
-                        format!("unexpected keyword {target} in expression"),
-                    ));
-                }
+                let path = self.parse_path_name()?;
                 if self.peek().kind == TokenKind::LParen {
                     self.bump();
                     let args = self.parse_args()?;
                     self.expect(TokenKind::RParen)?;
-                    Ok(Expr::Call { target, args })
-                } else if t.kind == TokenKind::Ident {
-                    Ok(Expr::Var(target))
-                } else {
+                    Ok(Expr::Call {
+                        target: path,
+                        args,
+                    })
+                } else if path.contains("::") {
+                    Err(Error::at(
+                        "parse",
+                        t.line,
+                        t.col,
+                        "qualified path must be called: mod::name(...)",
+                    ))
+                } else if path.starts_with('#') {
                     Err(Error::at(
                         "parse",
                         t.line,
                         t.col,
                         "bare address is not an expression; use #addr(...)",
                     ))
+                } else {
+                    Ok(Expr::Var(path))
                 }
             }
             TokenKind::LParen => {
@@ -870,7 +1004,7 @@ pub fn validate_ident(name: &str, line: usize, col: usize) -> Result<()> {
     }
     match name {
         "Num" | "Bool" | "Str" | "List" | "print" | "true" | "false" | "if" | "then" | "else"
-        | "type" | "match" => Err(Error::at(
+        | "type" | "match" | "module" | "import" => Err(Error::at(
             "lex",
             line,
             col,

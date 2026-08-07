@@ -46,6 +46,7 @@ bkt run examples/combo.bkt --arg 5          # prints 12
 bkt run examples/sum_list.bkt               # lists + recursion
 bkt run examples/records.bkt                # records + variants
 bkt run examples/math.bkt                   # ** pow, fact, gcd
+bkt run examples/modules/app.bkt            # import util::…
 ```
 
 ---
@@ -62,7 +63,35 @@ bkt run examples/math.bkt                   # ** pow, fact, gcd
 | `type Name = …` | Type aliases |
 | `None \| Some(Num)` | Tagged variants + `match` |
 | `if` / recursion | Control + algorithms |
+| `module` / `import` | Multi-file; addresses become `#mod/b…`; calls use `mod::name` |
 | `**` `pow` `mod` `floor` `abs` | Math cores; more via buckets |
+
+### Modules
+
+Each file can declare a module. Imports resolve `name.bkt` or `name/mod.bkt` next to the importer. Addresses stay unique by prefixing:
+
+```text
+// util.bkt
+module util
+double(x: Num) -> Num "×2" { x * 2 }
+
+// app.bkt
+module app
+import util
+
+@entry
+main() -> Num "use util" {
+  util::double(21)          // label path
+  // machine: #util/b00000001(21)
+}
+```
+
+| Inside module `util` | Linked / from outside |
+|---|---|
+| `#util/b00000001` | same |
+| label `double` | `util::double` |
+
+No module decl → classic `#b00000001` (single-file programs).
 
 ### Minimal program
 
@@ -133,6 +162,7 @@ Profiles: default **dev** includes `#t…` tests; **`--release`** strips them (f
 | [`examples/sum_list.bkt`](examples/sum_list.bkt) | `List`, `if`, recursion |
 | [`examples/records.bkt`](examples/records.bkt) | `type`, records, punning, variants + `match` |
 | [`examples/math.bkt`](examples/math.bkt) | `**` / cores + bootstrapped `fact` `gcd` `sqrt` |
+| [`examples/modules/`](examples/modules/) | `module` / `import` / `util::double` |
 | [`examples/locals.bkt`](examples/locals.bkt) | Multiple `print`s |
 | [`examples/types.bkt`](examples/types.bkt) | `Str` / `Bool` |
 | [`examples/dans_first_bkt.bkt`](examples/dans_first_bkt.bkt) | Minimal first program |
@@ -143,11 +173,11 @@ Full syntax: [`SPEC.md`](SPEC.md).
 
 ## Roadmap (short)
 
-**Done enough for bootstrap + iterate:** buckets, graph, tests, lists, records, variants, math cores, `context`/`edit`.
+**Done enough for bootstrap + iterate:** buckets, graph, tests, lists, records, variants, math cores, modules/imports, `context`/`edit`.
 
 **Next:** richer agent driver (scratchpad + edit loop), then AOT `bkt build` to a binary.
 
-**Deferred:** row polymorphism, heap/`Ptr` globals story, multi-file projects.
+**Deferred:** row polymorphism, heap/`Ptr`, package registry beyond file imports.
 
 ---
 
