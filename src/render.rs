@@ -20,6 +20,23 @@ pub fn render_raw(expr: &Expr) -> String {
             format!("{{ {} }}", inner.join(", "))
         }
         Expr::Field { base, field } => format!("{}.{}", render_raw(base), field),
+        Expr::Variant { tag, payload } => match payload {
+            None => tag.clone(),
+            Some(p) => format!("{tag}({})", render_raw(p)),
+        },
+        Expr::Match { scrutinee, arms } => {
+            let as_: Vec<String> = arms
+                .iter()
+                .map(|a| {
+                    let pat = match &a.binder {
+                        None => a.tag.clone(),
+                        Some(b) => format!("{}({})", a.tag, b),
+                    };
+                    format!("{} => {}", pat, render_raw(&a.body))
+                })
+                .collect();
+            format!("match {} {{ {} }}", render_raw(scrutinee), as_.join(", "))
+        }
         Expr::If {
             cond,
             then_branch,
@@ -66,6 +83,27 @@ pub fn render_labelled(expr: &Expr, reg: &Registry) -> String {
             format!("{{ {} }}", inner.join(", "))
         }
         Expr::Field { base, field } => format!("{}.{}", render_labelled(base, reg), field),
+        Expr::Variant { tag, payload } => match payload {
+            None => tag.clone(),
+            Some(p) => format!("{tag}({})", render_labelled(p, reg)),
+        },
+        Expr::Match { scrutinee, arms } => {
+            let as_: Vec<String> = arms
+                .iter()
+                .map(|a| {
+                    let pat = match &a.binder {
+                        None => a.tag.clone(),
+                        Some(b) => format!("{}({})", a.tag, b),
+                    };
+                    format!("{} => {}", pat, render_labelled(&a.body, reg))
+                })
+                .collect();
+            format!(
+                "match {} {{ {} }}",
+                render_labelled(scrutinee, reg),
+                as_.join(", ")
+            )
+        }
         Expr::If {
             cond,
             then_branch,
@@ -87,6 +125,7 @@ pub fn render_labelled(expr: &Expr, reg: &Registry) -> String {
                     | "#c.sub"
                     | "#c.mul"
                     | "#c.div"
+                    | "#c.pow"
                     | "#c.eq"
                     | "#c.ne"
                     | "#c.lt"
@@ -102,6 +141,7 @@ pub fn render_labelled(expr: &Expr, reg: &Registry) -> String {
                     "#c.sub" => "-",
                     "#c.mul" => "*",
                     "#c.div" => "/",
+                    "#c.pow" => "**",
                     "#c.eq" => "==",
                     "#c.ne" => "!=",
                     "#c.lt" => "<",

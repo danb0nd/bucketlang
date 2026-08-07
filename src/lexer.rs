@@ -22,8 +22,10 @@ pub enum TokenKind {
     Plus,
     Minus,
     Star,
+    StarStar,
     Slash,
     EqEq,
+    FatArrow,
     BangEq,
     Eq,
     Lt,
@@ -32,6 +34,7 @@ pub enum TokenKind {
     GtEq,
     Bang,
     AmpAmp,
+    Pipe,
     PipePipe,
     Colon,
     Comma,
@@ -92,6 +95,17 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 tokens.push(Token {
                     kind: TokenKind::EqEq,
                     text: "==".into(),
+                    line: start_line,
+                    col: start_col,
+                });
+                i += 2;
+                col += 2;
+                continue;
+            }
+            if i + 1 < chars.len() && chars[i + 1] == '>' {
+                tokens.push(Token {
+                    kind: TokenKind::FatArrow,
+                    text: "=>".into(),
                     line: start_line,
                     col: start_col,
                 });
@@ -186,15 +200,26 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
             col += 2;
             continue;
         }
-        if c == '|' && i + 1 < chars.len() && chars[i + 1] == '|' {
+        if c == '|' {
+            if i + 1 < chars.len() && chars[i + 1] == '|' {
+                tokens.push(Token {
+                    kind: TokenKind::PipePipe,
+                    text: "||".into(),
+                    line: start_line,
+                    col: start_col,
+                });
+                i += 2;
+                col += 2;
+                continue;
+            }
             tokens.push(Token {
-                kind: TokenKind::PipePipe,
-                text: "||".into(),
+                kind: TokenKind::Pipe,
+                text: "|".into(),
                 line: start_line,
                 col: start_col,
             });
-            i += 2;
-            col += 2;
+            i += 1;
+            col += 1;
             continue;
         }
         if c == '@' {
@@ -331,6 +356,18 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
             });
             col += j - i;
             i = j;
+            continue;
+        }
+
+        if c == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            tokens.push(Token {
+                kind: TokenKind::StarStar,
+                text: "**".into(),
+                line: start_line,
+                col: start_col,
+            });
+            i += 2;
+            col += 2;
             continue;
         }
 

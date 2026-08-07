@@ -91,6 +91,39 @@ fn eval_expr(
                 .cloned()
                 .ok_or_else(|| Error::msg(format!("missing field '{field}' in {from}")))
         }
+        Expr::Variant { tag, payload } => {
+            let p = match payload {
+                None => None,
+                Some(e) => Some(Box::new(eval_expr(e, env, reg, out, from, depth)?)),
+            };
+            Ok(Value::Variant {
+                tag: tag.clone(),
+                payload: p,
+            })
+        }
+        Expr::Match { scrutinee, arms } => {
+            let v = eval_expr(scrutinee, env, reg, out, from, depth)?;
+            let Value::Variant { tag, payload } = v else {
+                return Err(Error::msg(format!(
+                    "match expected variant in {from}, got {}",
+                    v.ty().name()
+                )));
+            };
+            for arm in arms {
+                if arm.tag == tag {
+                    if let Some(binder) = &arm.binder {
+                        let p = payload.ok_or_else(|| {
+                            Error::msg(format!("match arm '{tag}' expected payload in {from}"))
+                        })?;
+                        env.insert(binder.clone(), *p);
+                    }
+                    return eval_expr(&arm.body, env, reg, out, from, depth);
+                }
+            }
+            Err(Error::msg(format!(
+                "no match arm for tag '{tag}' in {from}"
+            )))
+        }
         Expr::If {
             cond,
             then_branch,
@@ -153,6 +186,27 @@ fn eval_call(
             }
             Ok(Value::Num(args[0].as_num().map_err(Error::msg)? / b))
         }
+        "#c.pow" => {
+            let a = args[0].as_num().map_err(Error::msg)?;
+            let b = args[1].as_num().map_err(Error::msg)?;
+            let r = a.powf(b);
+            if r.is_nan() || r.is_infinite() {
+                return Err(Error::msg(format!("pow({a}, {b}) is not a finite Num")));
+            }
+            Ok(Value::Num(r))
+        }
+        "#c.mod" => {
+            let a = args[0].as_num().map_err(Error::msg)?;
+            let b = args[1].as_num().map_err(Error::msg)?;
+            if b == 0.0 {
+                return Err(Error::msg("modulo by zero in #c.mod"));
+            }
+            Ok(Value::Num(a % b))
+        }
+        "#c.floor" => Ok(Value::Num(
+            args[0].as_num().map_err(Error::msg)?.floor(),
+        )),
+        "#c.abs" => Ok(Value::Num(args[0].as_num().map_err(Error::msg)?.abs())),
         "#c.eq" => Ok(Value::Bool(args[0].equals(&args[1]))),
         "#c.ne" => Ok(Value::Bool(!args[0].equals(&args[1]))),
         "#c.lt" => Ok(Value::Bool(

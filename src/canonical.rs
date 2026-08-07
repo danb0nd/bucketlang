@@ -18,6 +18,20 @@ pub fn canonical_repr(expr: &Expr) -> String {
             format!("R{{{}}}", inner.join(","))
         }
         Expr::Field { base, field } => format!("F({}.{})", canonical_repr(base), field),
+        Expr::Variant { tag, payload } => match payload {
+            None => format!("V({tag})"),
+            Some(p) => format!("V({tag};{})", canonical_repr(p)),
+        },
+        Expr::Match { scrutinee, arms } => {
+            let as_: Vec<String> = arms
+                .iter()
+                .map(|a| {
+                    let b = a.binder.as_deref().unwrap_or("_");
+                    format!("{}({}):{}", a.tag, b, canonical_repr(&a.body))
+                })
+                .collect();
+            format!("M({};{})", canonical_repr(scrutinee), as_.join("|"))
+        }
         Expr::If {
             cond,
             then_branch,

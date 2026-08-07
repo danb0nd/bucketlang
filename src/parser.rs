@@ -39,12 +39,50 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    pub fn parse_program(&mut self) -> Result<Vec<RawBucket>> {
+    pub fn parse_program(&mut self) -> Result<RawProgram> {
+        let mut aliases = Vec::new();
         let mut buckets = Vec::new();
         while self.peek().kind != TokenKind::Eof {
-            buckets.push(self.parse_item()?);
+            if self.peek().kind == TokenKind::Ident && self.peek().text == "type" {
+                aliases.push(self.parse_type_alias()?);
+            } else {
+                buckets.push(self.parse_item()?);
+            }
         }
-        Ok(buckets)
+        Ok(RawProgram { aliases, buckets })
+    }
+
+    fn parse_type_alias(&mut self) -> Result<RawTypeAlias> {
+        let t0 = self.peek().clone();
+        self.expect(TokenKind::Ident)?; // type
+        if t0.text != "type" {
+            return Err(Error::at("parse", t0.line, t0.col, "expected type"));
+        }
+        let name_tok = self.peek().clone();
+        if name_tok.kind != TokenKind::Ident {
+            return Err(Error::at(
+                "parse",
+                name_tok.line,
+                name_tok.col,
+                "expected type alias name",
+            ));
+        }
+        let name = self.bump().text.clone();
+        validate_ident(&name, name_tok.line, name_tok.col)?;
+        match name.as_str() {
+            "Num" | "Bool" | "Str" | "List" | "Any" => {
+                return Err(Error::at(
+                    "parse",
+                    name_tok.line,
+                    name_tok.col,
+                    format!("cannot redefine built-in type {name}"),
+                ));
+            }
+            _ => {}
+        }
+        self.expect(TokenKind::Eq)?;
+        let ty = self.parse_type()?;
+        Ok(RawTypeAlias { name, ty })
     }
 
     fn parse_item(&mut self) -> Result<RawBucket> {
@@ -248,6 +286,53 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<Type> {
+        let first = self.parse_type_atom()?;
+        if self.peek().kind != TokenKind::Pipe {
+            return Ok(first);
+        }
+        // Variant union: Tag | Tag(T) | ...
+        let mut tags = BTreeMap::new();
+        self.push_variant_atom(&mut tags, first)?;
+        while self.peek().kind == TokenKind::Pipe {
+            self.bump();
+            let atom = self.parse_type_atom()?;
+            self.push_variant_atom(&mut tags, atom)?;
+        }
+        if tags.len() < 2 {
+            return Err(Error::msg(
+                "variant type needs at least two tags (e.g. None | Some(Num))",
+            ));
+        }
+        Ok(Type::Variant(tags))
+    }
+
+    fn push_variant_atom(
+        &self,
+        tags: &mut BTreeMap<String, Option<Type>>,
+        atom: Type,
+    ) -> Result<()> {
+        match atom {
+            Type::Name(tag) => {
+                if tags.insert(tag.clone(), None).is_some() {
+                    return Err(Error::msg(format!("duplicate variant tag {tag}")));
+                }
+                Ok(())
+            }
+            Type::Variant(partial) if partial.len() == 1 => {
+                let (tag, payload) = partial.into_iter().next().unwrap();
+                if tags.insert(tag.clone(), payload).is_some() {
+                    return Err(Error::msg(format!("duplicate variant tag {tag}")));
+                }
+                Ok(())
+            }
+            other => Err(Error::msg(format!(
+                "variant tag must look like None or Some(T), got {}",
+                other.name()
+            ))),
+        }
+    }
+
+    fn parse_type_atom(&mut self) -> Result<Type> {
         let t = self.peek().clone();
         match t.kind {
             TokenKind::LBrace => self.parse_record_type(),
@@ -263,14 +348,19 @@ impl<'a> Parser<'a> {
                         self.expect(TokenKind::RBracket)?;
                         Ok(Type::List(Box::new(inner)))
                     }
-                    other => Err(Error::at(
-                        "parse",
-                        t.line,
-                        t.col,
-                        format!(
-                            "unknown type {other} (want Num, Bool, Str, List[…], or {{ … }})"
-                        ),
-                    )),
+                    other => {
+                        if self.peek().kind == TokenKind::LParen {
+                            // Tag(Payload) as a one-tag variant atom for unions
+                            self.bump();
+                            let payload = self.parse_type()?;
+                            self.expect(TokenKind::RParen)?;
+                            let mut m = BTreeMap::new();
+                            m.insert(other.to_string(), Some(payload));
+                            Ok(Type::Variant(m))
+                        } else {
+                            Ok(Type::Name(other.to_string()))
+                        }
+                    }
                 }
             }
             _ => Err(Error::at("parse", t.line, t.col, "expected type")),
@@ -327,7 +417,70 @@ impl<'a> Parser<'a> {
         if self.peek().kind == TokenKind::Ident && self.peek().text == "if" {
             return self.parse_if();
         }
+        if self.peek().kind == TokenKind::Ident && self.peek().text == "match" {
+            return self.parse_match();
+        }
         self.parse_or()
+    }
+
+    fn parse_match(&mut self) -> Result<Expr> {
+        let t = self.peek().clone();
+        self.expect(TokenKind::Ident)?; // match
+        if t.text != "match" {
+            return Err(Error::at("parse", t.line, t.col, "expected match"));
+        }
+        let scrutinee = self.parse_or()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        while self.peek().kind != TokenKind::RBrace {
+            let tag_tok = self.peek().clone();
+            if tag_tok.kind != TokenKind::Ident {
+                return Err(Error::at(
+                    "parse",
+                    tag_tok.line,
+                    tag_tok.col,
+                    "expected variant tag in match arm",
+                ));
+            }
+            let tag = self.bump().text.clone();
+            let binder = if self.peek().kind == TokenKind::LParen {
+                self.bump();
+                let bt = self.peek().clone();
+                if bt.kind != TokenKind::Ident {
+                    return Err(Error::at(
+                        "parse",
+                        bt.line,
+                        bt.col,
+                        "expected binder name in match arm",
+                    ));
+                }
+                let name = self.bump().text.clone();
+                validate_ident(&name, bt.line, bt.col)?;
+                self.expect(TokenKind::RParen)?;
+                Some(name)
+            } else {
+                None
+            };
+            self.expect(TokenKind::FatArrow)?;
+            let body = self.parse_expr()?;
+            arms.push(MatchArm { tag, binder, body });
+            if self.peek().kind == TokenKind::Comma {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        if arms.is_empty() {
+            return Err(Error::at(
+                "parse",
+                t.line,
+                t.col,
+                "match needs at least one arm",
+            ));
+        }
+        Ok(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        })
     }
 
     fn parse_if(&mut self) -> Result<Expr> {
@@ -442,12 +595,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_term(&mut self) -> Result<Expr> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_power()?;
         loop {
             match self.peek().kind {
                 TokenKind::Star => {
                     self.bump();
-                    let right = self.parse_unary()?;
+                    let right = self.parse_power()?;
                     left = Expr::Call {
                         target: "#c.mul".into(),
                         args: vec![left, right],
@@ -455,7 +608,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Slash => {
                     self.bump();
-                    let right = self.parse_unary()?;
+                    let right = self.parse_power()?;
                     left = Expr::Call {
                         target: "#c.div".into(),
                         args: vec![left, right],
@@ -465,6 +618,21 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(left)
+    }
+
+    /// Right-associative `**` / pow.
+    fn parse_power(&mut self) -> Result<Expr> {
+        let left = self.parse_unary()?;
+        if self.peek().kind == TokenKind::StarStar {
+            self.bump();
+            let right = self.parse_power()?;
+            Ok(Expr::Call {
+                target: "#c.pow".into(),
+                args: vec![left, right],
+            })
+        } else {
+            Ok(left)
+        }
     }
 
     fn parse_unary(&mut self) -> Result<Expr> {
@@ -604,8 +772,20 @@ impl<'a> Parser<'a> {
                 }
                 let name = self.bump().text.clone();
                 validate_ident(&name, name_tok.line, name_tok.col)?;
-                self.expect(TokenKind::Colon)?;
-                let value = self.parse_expr()?;
+                // Field punning: `{ x, y }` means `{ x: x, y: y }`
+                let value = if self.peek().kind == TokenKind::Colon {
+                    self.bump();
+                    self.parse_expr()?
+                } else if matches!(self.peek().kind, TokenKind::Comma | TokenKind::RBrace) {
+                    Expr::Var(name.clone())
+                } else {
+                    return Err(Error::at(
+                        "parse",
+                        name_tok.line,
+                        name_tok.col,
+                        "expected ':' or field punning in record literal",
+                    ));
+                };
                 if seen.insert(name.clone(), ()).is_some() {
                     return Err(Error::at(
                         "parse",
@@ -689,14 +869,13 @@ pub fn validate_ident(name: &str, line: usize, col: usize) -> Result<()> {
         ));
     }
     match name {
-        "Num" | "Bool" | "Str" | "List" | "print" | "true" | "false" | "if" | "then" | "else" => {
-            Err(Error::at(
-                "lex",
-                line,
-                col,
-                format!("reserved identifier: {name}"),
-            ))
-        }
+        "Num" | "Bool" | "Str" | "List" | "print" | "true" | "false" | "if" | "then" | "else"
+        | "type" | "match" => Err(Error::at(
+            "lex",
+            line,
+            col,
+            format!("reserved identifier: {name}"),
+        )),
         _ => Ok(()),
     }
 }

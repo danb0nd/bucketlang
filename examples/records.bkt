@@ -1,31 +1,29 @@
-// In-language data structures via records + constructor buckets.
-// This is the bootstrap surface: new shapes without new language cores.
+// Records (with field punning) + tagged variants (real Option, no sentinels).
+
+type Point = { x: Num, y: Num }
+type OptNum = None | Some(Num)
 
 @test point(2, 3) == { x: 2, y: 3 }
-point(x: Num, y: Num) -> { x: Num, y: Num } "construct a point" {
-  { x: x, y: y }
+point(x: Num, y: Num) -> Point "construct a point" {
+  { x, y }
 }
 
 @test mag2(point(3, 4)) == 25
-mag2(p: { x: Num, y: Num }) -> Num "squared magnitude" {
+mag2(p: Point) -> Num "squared magnitude" {
   p.x * p.x + p.y * p.y
 }
 
-// Encode an optional Num without a sum-type core
-@test unwrap_or(none(), 7) == 7
-@test unwrap_or(some(9), 7) == 9
-none() -> { ok: Bool, val: Num } "empty optional" {
-  { ok: false, val: 0 }
-}
-some(v: Num) -> { ok: Bool, val: Num } "present optional" {
-  { ok: true, val: v }
-}
-unwrap_or(o: { ok: Bool, val: Num }, d: Num) -> Num "default if none" {
-  if o.ok then o.val else d
+@test unwrap_or(None, 7) == 7
+@test unwrap_or(Some(9), 7) == 9
+unwrap_or(o: OptNum, d: Num) -> Num "default if None" {
+  match o {
+    None => d,
+    Some(v) => v
+  }
 }
 
 @entry
-main() -> Num "demo records" {
+main() -> Num "demo records + variants" {
   print(mag2(point(3, 4)))
-  unwrap_or(some(1), 0)
+  unwrap_or(Some(1), 0)
 }

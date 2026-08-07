@@ -82,6 +82,17 @@ fn lint_unused_locals(expr: &Expr, label: &str, addr: &str, out: &mut Vec<Warnin
             }
         }
         Expr::Field { base, .. } => lint_unused_locals(base, label, addr, out),
+        Expr::Variant { payload, .. } => {
+            if let Some(p) = payload {
+                lint_unused_locals(p, label, addr, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            lint_unused_locals(scrutinee, label, addr, out);
+            for a in arms {
+                lint_unused_locals(&a.body, label, addr, out);
+            }
+        }
         Expr::If {
             cond,
             then_branch,
@@ -125,6 +136,17 @@ fn collect_vars(expr: &Expr, set: &mut BTreeSet<String>) {
             }
         }
         Expr::Field { base, .. } => collect_vars(base, set),
+        Expr::Variant { payload, .. } => {
+            if let Some(p) = payload {
+                collect_vars(p, set);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_vars(scrutinee, set);
+            for a in arms {
+                collect_vars(&a.body, set);
+            }
+        }
         Expr::If {
             cond,
             then_branch,

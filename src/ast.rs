@@ -9,6 +9,10 @@ pub enum Type {
     List(Box<Type>),
     /// Named fields; order canonicalized by field name.
     Record(BTreeMap<String, Type>),
+    /// Tagged union: tag -> optional payload type (`None` = nullary).
+    Variant(BTreeMap<String, Option<Type>>),
+    /// User type alias (resolved away during compile).
+    Name(String),
     /// Core-only (e.g. print accepts any)
     Any,
 }
@@ -27,6 +31,17 @@ impl Type {
                     .collect();
                 format!("{{ {} }}", inner.join(", "))
             }
+            Type::Variant(tags) => {
+                let inner: Vec<String> = tags
+                    .iter()
+                    .map(|(tag, payload)| match payload {
+                        None => tag.clone(),
+                        Some(t) => format!("{tag}({})", t.name()),
+                    })
+                    .collect();
+                inner.join(" | ")
+            }
+            Type::Name(n) => n.clone(),
             Type::Any => "Any".into(),
         }
     }
@@ -39,8 +54,17 @@ impl Type {
                 if a.len() != b.len() {
                     return false;
                 }
-                a.iter().all(|(k, at)| {
-                    b.get(k).is_some_and(|bt| at.matches(bt))
+                a.iter()
+                    .all(|(k, at)| b.get(k).is_some_and(|bt| at.matches(bt)))
+            }
+            (Type::Variant(expected), Type::Variant(got)) => {
+                // Runtime values often carry a single tag; allow got ⊆ expected.
+                got.iter().all(|(tag, gp)| {
+                    expected.get(tag).is_some_and(|ep| match (ep, gp) {
+                        (None, None) => true,
+                        (Some(x), Some(y)) => x.matches(y),
+                        _ => false,
+                    })
                 })
             }
             (a, b) => a == b,
@@ -60,6 +84,13 @@ impl Type {
             _ => None,
         }
     }
+
+    pub fn variant_tags(&self) -> Option<&BTreeMap<String, Option<Type>>> {
+        match self {
+            Type::Variant(t) => Some(t),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -75,6 +106,13 @@ pub struct Contract {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MatchArm {
+    pub tag: String,
+    pub binder: Option<String>,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Expr {
     Num(f64),
     Bool(bool),
@@ -85,6 +123,14 @@ pub enum Expr {
     Field {
         base: Box<Expr>,
         field: String,
+    },
+    Variant {
+        tag: String,
+        payload: Option<Box<Expr>>,
+    },
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
     },
     If {
         cond: Box<Expr>,
@@ -112,6 +158,18 @@ pub struct TestAnn {
     pub call_target: String,
     pub args: Vec<Expr>,
     pub expected: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RawTypeAlias {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RawProgram {
+    pub aliases: Vec<RawTypeAlias>,
+    pub buckets: Vec<RawBucket>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

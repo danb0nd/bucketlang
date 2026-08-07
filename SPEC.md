@@ -78,9 +78,12 @@ main(name: Str) -> Str "entrypoint: locals, print, strings" {
 == != < <= > >=     // compare (Num relations; ==/!= also Str/Bool)
 + -                 // Num arithmetic; Str + Str => concat
 * /                 // Num
+**                  // Num power (right-associative) → #c.pow
 !  -                // unary not / negate
 primary             // literal, var, call, (expr)
 ```
+
+Math cores (also callable by label): `pow` `mod` `floor` `abs`. Higher-level helpers (`sqrt`, `fact`, `gcd`, …) can be bootstrapped as buckets — see `examples/math.bkt`.
 
 Literals: `3`, `2.5`, `true`, `false`, `"string"`.
 
@@ -92,11 +95,12 @@ Literals: `3`, `2.5`, `true`, `false`, `"string"`.
 | `Bool` | `true`, `false` | `&& \|\| !`, `== !=` |
 | `Str` | `"hi"` | `+` concatenates; `== !=` |
 | `List[T]` | `[1, 2]`, `[]` | `T` any value type (incl. records / nested lists). Immutable; ops return new lists. |
-| `{ f: T, … }` | `{ x: 1, y: 2 }` | Record (named product). Field access `p.x`. Bootstrap new structures in-language. |
+| `{ f: T, … }` | `{ x: 1, y: 2 }` or `{ x, y }` | Record. Access `p.x`. Punning: `{ x, y }` ≡ `{ x: x, y: y }`. |
+| `A \| B(T)` | `None`, `Some(3)` | Tagged variant. Exhaustive `match`. |
 
-`print` accepts any of these. `@test` expected values can be Num, Bool, Str, List, or Record.
+`print` accepts these. `@test` expected values may be Num, Bool, Str, List, Record, or Variant.
 
-### Control + lists + records
+### Control + lists + records + variants
 
 ```text
 if cond then a else b
@@ -104,11 +108,31 @@ if cond then a else b
 list_len(xs) list_nth(xs, i) list_append(xs, x)
 list_concat(a, b) list_remove(xs, i)   // 0-based; OOB = runtime error
 
-point(x: Num, y: Num) -> { x: Num, y: Num } "ctor" { { x: x, y: y } }
+type Point = { x: Num, y: Num }
+type OptNum = None | Some(Num)
+
+point(x: Num, y: Num) -> Point "ctor" { { x, y } }
 p.x
+
+unwrap_or(o: OptNum, d: Num) -> Num "…" {
+  match o {
+    None => d,
+    Some(v) => v
+  }
+}
 ```
 
-**Bootstrap rule:** new data structures = record shapes + constructor/helper buckets (and optional tag fields for sum-like encodings). No new cores required.
+**Bootstrap rule:** new ADTs = `type` + record/variant shapes + helper buckets. Add language **cores** only for primitives that can’t be honest in userland (e.g. `pow`).
+
+### Type aliases
+
+```text
+type Point = { x: Num, y: Num }
+type OptNum = None | Some(Num)
+type Points = List[Point]
+```
+
+Aliases expand during compile. Variant **tags must be unique** across the program. Cycles / unknown names error.
 
 Buckets may call themselves (recursion) or each other; eval aborts past depth 256.
 
@@ -116,7 +140,7 @@ Buckets may call themselves (recursion) or each other; eval aborts past depth 25
 
 | Prefix | Who | Notes |
 |---|---|---|
-| `#c.*` | Language | Cores: arithmetic/compare/logic, `print` `assert_eq`, `list_len` `list_nth` `list_append` `list_concat` `list_remove` |
+| `#c.*` | Language | Cores: `add` `sub` `mul` `div` `pow` `mod` `floor` `abs`, compare/logic, `print` `assert_eq`, `list_*` |
 | `#b…` | User / compiler | Sequential mint or manual |
 | `#t…` | Compiler | From `@test` only |
 

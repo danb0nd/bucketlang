@@ -70,6 +70,34 @@ impl Registry {
         self.core("#c.sub", None, "subtract", n2("a", "b"), Type::Num);
         self.core("#c.mul", None, "multiply", n2("a", "b"), Type::Num);
         self.core("#c.div", None, "divide", n2("a", "b"), Type::Num);
+        self.core(
+            "#c.pow",
+            Some("pow"),
+            "exponentiation (a ** b)",
+            n2("a", "b"),
+            Type::Num,
+        );
+        self.core(
+            "#c.mod",
+            Some("mod"),
+            "floating modulo remainder",
+            n2("a", "b"),
+            Type::Num,
+        );
+        self.core(
+            "#c.floor",
+            Some("floor"),
+            "floor to integer Num",
+            vec![("x", Type::Num)],
+            Type::Num,
+        );
+        self.core(
+            "#c.abs",
+            Some("abs"),
+            "absolute value",
+            vec![("x", Type::Num)],
+            Type::Num,
+        );
 
         self.core(
             "#c.eq",

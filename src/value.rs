@@ -3,13 +3,16 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(untagged)]
 pub enum Value {
     Num(f64),
     Bool(bool),
     Str(String),
     List(Vec<Value>),
     Record(BTreeMap<String, Value>),
+    Variant {
+        tag: String,
+        payload: Option<Box<Value>>,
+    },
 }
 
 impl Value {
@@ -28,6 +31,11 @@ impl Value {
                     tys.insert(k.clone(), v.ty());
                 }
                 Type::Record(tys)
+            }
+            Value::Variant { tag, payload } => {
+                let mut tags = BTreeMap::new();
+                tags.insert(tag.clone(), payload.as_ref().map(|p| p.ty()));
+                Type::Variant(tags)
             }
         }
     }
@@ -57,6 +65,10 @@ impl Value {
                     .collect();
                 format!("{{ {} }}", inner.join(", "))
             }
+            Value::Variant { tag, payload } => match payload {
+                None => tag.clone(),
+                Some(v) => format!("{tag}({})", v.display()),
+            },
         }
     }
 
@@ -72,6 +84,23 @@ impl Value {
                 a.len() == b.len()
                     && a.iter()
                         .all(|(k, v)| b.get(k).is_some_and(|w| v.equals(w)))
+            }
+            (
+                Value::Variant {
+                    tag: t1,
+                    payload: p1,
+                },
+                Value::Variant {
+                    tag: t2,
+                    payload: p2,
+                },
+            ) => {
+                t1 == t2
+                    && match (p1, p2) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => a.equals(b),
+                        _ => false,
+                    }
             }
             _ => false,
         }
@@ -135,9 +164,10 @@ pub fn parse_arg(raw: &str, expected: Option<&Type>) -> Result<Value, String> {
                 _ => Err(format!("expected Bool arg (true/false), got {raw:?}")),
             },
             Type::Str => Ok(Value::Str(raw.to_string())),
-            Type::List(_) | Type::Record(_) => Err(
-                "List/Record CLI args not supported yet; build them in the program".into(),
+            Type::List(_) | Type::Record(_) | Type::Variant(_) => Err(
+                "List/Record/Variant CLI args not supported yet; build them in the program".into(),
             ),
+            Type::Name(n) => Err(format!("unresolved type alias {n} in CLI arg")),
             Type::Any => parse_arg_auto(raw),
         };
     }

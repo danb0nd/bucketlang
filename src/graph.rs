@@ -74,6 +74,17 @@ fn collect_calls(expr: &Expr, out: &mut BTreeSet<String>) {
             }
         }
         Expr::Field { base, .. } => collect_calls(base, out),
+        Expr::Variant { payload, .. } => {
+            if let Some(p) = payload {
+                collect_calls(p, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_calls(scrutinee, out);
+            for a in arms {
+                collect_calls(&a.body, out);
+            }
+        }
         Expr::If {
             cond,
             then_branch,

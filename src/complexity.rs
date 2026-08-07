@@ -52,6 +52,41 @@ pub fn measure(expr: &Expr) -> Complexity {
                     calls: c.calls,
                 }
             }
+            Expr::Variant { payload, .. } => match payload {
+                None => Complexity {
+                    nodes: 1,
+                    depth,
+                    calls: 0,
+                },
+                Some(p) => {
+                    let c = walk(p, depth + 1);
+                    Complexity {
+                        nodes: c.nodes + 1,
+                        depth: c.depth,
+                        calls: c.calls,
+                    }
+                }
+            },
+            Expr::Match { scrutinee, arms } => {
+                let mut nodes = 1;
+                let mut calls = 0;
+                let mut max_d = depth;
+                let c = walk(scrutinee, depth + 1);
+                nodes += c.nodes;
+                calls += c.calls;
+                max_d = max_d.max(c.depth);
+                for a in arms {
+                    let c = walk(&a.body, depth + 1);
+                    nodes += c.nodes;
+                    calls += c.calls;
+                    max_d = max_d.max(c.depth);
+                }
+                Complexity {
+                    nodes,
+                    depth: max_d,
+                    calls,
+                }
+            }
             Expr::If {
                 cond,
                 then_branch,

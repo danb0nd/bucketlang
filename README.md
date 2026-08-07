@@ -1,67 +1,72 @@
 # bucketlang
 
-An experimental language where programs are **graphs of addressable buckets** — small semantic slots with stable IDs, contracts, and plain-language descriptions — plus a CLI (`bkt`) to run and inspect them.
+A small **expression language** designed so an LLM can edit **one function at a time** against a **call graph**, with contracts and tests sitting next to the code.
 
-## Why
+The runtime today is: **compile → in-memory IR → interpret**.  
+Later: same IR can **AOT-compile to a binary** when a program is “done.”
 
-Most coding agents still chew on whole files. That’s wasteful: context is expensive, and most of a file is irrelevant to one edit.
+Repo: https://github.com/danb0nd/bucketlang
 
-Bucketlang tries a different substrate:
+---
 
-1. **Code lives in buckets** — each bucket is a slot with a fixed address (`#b00000001`), optional human label, a required description, a typed contract, and a small expression body.
-2. **Identity ≠ name ≠ meaning** — the address is the pointer; the label is sugar; the description is for humans/LLMs/retrieval; the body is the payload.
-3. **The program is a graph** — calls create edges. No separate wiring file. `bkt inspect --graph` shows who calls whom (including tests and core ops).
-4. **Keep buckets small** — complexity limits stop “one giant function” from collapsing the graph.
-5. **Deterministic tooling first** — parse, typecheck, eval, graph, and tests are normal compiler work. The long-term idea is that an LLM edits *one bucket* over a *minimal subgraph*, not a whole repo dump.
+## What we are building (the point)
 
-This repo is an early prototype of that language and runtime — not the full agent harness yet.
+Most coding agents paste whole files into context. That’s wasteful.
 
-## Mental model
+Bucketlang’s bet:
+
+1. **Code is buckets** — addressable slots (`#b00000001`) with a label, a `"description"`, a typed contract, and a small body.
+2. **The program is a graph** — calls are edges. Tools can show the neighborhood of one bucket.
+3. **Keep buckets small** — complexity budgets discourage monster functions.
+4. **Spec travels with code** — `@test` and descriptions are inline, so an agent doesn’t need a separate test harness dump.
+5. **Bootstrap in userland** — new data structures are mostly `type` aliases + constructors + helpers, not endless new language cores.
+6. **LLM loop on the interpreter** — `bkt context` / `bkt edit` → recompile → run tests fast. Ship later with a binary backend.
+
+This repo is the **language + `bkt` CLI**. The full multi-step agent driver is next, not done yet.
 
 ```text
-┌─────────────────────────────────────────┐
-│  #b00000003   label: combo              │
-│  "add one, then double"                 │
-│  (x: Num) -> Num                        │
-├─────────────────────────────────────────┤
-│  double(add_one(x))                     │
-└─────────────────────────────────────────┘
-         │              │
-         ▼              ▼
-    #b00000001     #b00000002
-     add_one         double
+.bkt source ──► compile (Registry IR) ──► interpret (harness / dev)
+                         │
+                         └──► AOT binary (planned)
 ```
 
-Reserved cores live in `#c.*` (`#c.add`, `#c.print`, …). Shadow tests from `@test` become real `#t…` buckets so behaviour checks sit in the same address space.
+---
 
 ## Quick start
-
-Requires a recent Rust toolchain (`cargo`).
 
 ```bash
 git clone https://github.com/danb0nd/bucketlang.git
 cd bucketlang
 cargo build --release
-
-# put bkt on your PATH for convenience, or use the path below
 alias bkt=./target/release/bkt
 
 bkt check examples/combo.bkt
-bkt run examples/combo.bkt --arg 5
+bkt run examples/combo.bkt --arg 5          # prints 12
+
+bkt run examples/sum_list.bkt               # lists + recursion
+bkt run examples/records.bkt                # records + variants
+bkt run examples/math.bkt                   # ** pow, fact, gcd
 ```
 
-Default `bkt run` output is **only** what your program `print`s:
+---
+
+## Language surface (current)
+
+| Piece | Role |
+|---|---|
+| Buckets | Named functions with `(args) -> Ret "desc" { body }` |
+| `@entry` / `@test` | Program entry; shadow tests (`#t…`) |
+| `Num` `Bool` `Str` | Scalars |
+| `List[T]` | Immutable lists + `list_*` cores |
+| `{ x: Num, y: Num }` | Records; field access `p.x`; **punning** `{ x, y }` |
+| `type Name = …` | Type aliases |
+| `None \| Some(Num)` | Tagged variants + `match` |
+| `if` / recursion | Control + algorithms |
+| `**` `pow` `mod` `floor` `abs` | Math cores; more via buckets |
+
+### Minimal program
 
 ```text
-12
-```
-
-## Write a program
-
-Create a file ending in `.bkt` or `.bucket`.
-
-```text
-// hello.bkt
 @test triple(3) == 9
 triple(x: Num) -> Num "multiply by 3" {
   x * 3
@@ -73,213 +78,79 @@ main() -> Num "print triple(5)" {
 }
 ```
 
-```bash
-bkt run hello.bkt
-# 15
-```
-
-### Anatomy of a bucket
+### Bootstrap a structure
 
 ```text
-label(params) -> ReturnType "description for humans/LLMs" {
-  body
+type Point = { x: Num, y: Num }
+type OptNum = None | Some(Num)
+
+point(x: Num, y: Num) -> Point "ctor" {
+  { x, y }                    // field punning
+}
+
+unwrap_or(o: OptNum, d: Num) -> Num "default if None" {
+  match o {
+    None => d,
+    Some(v) => v
+  }
 }
 ```
 
-| Piece | Meaning |
-|---|---|
-| `label` | Human sugar; compiles to a stable `#b…` address |
-| `(x: Num)` | Typed params (contract) |
-| `-> Num` | Return type |
-| `"…"` | Mandatory description in strict mode (default) |
-| `{ … }` | Body: locals, `print`, final expression |
+**Rule of thumb:** add a **core** only when userland can’t do it honestly (e.g. real `pow`). Add a **type + buckets** for new ADTs.
 
-Mark exactly one bucket with `@entry` — that’s what `bkt run` executes.
+---
 
-### Locals and print
-
-```text
-@entry
-demo(x: Num) -> Num "locals + print" {
-  a = x + 1
-  b = a * 2
-  print(a)
-  print(b)
-  b
-}
-```
+## CLI (LLM-oriented)
 
 ```bash
-bkt run examples/locals.bkt --arg 5
-# 6
-# 12
-```
+# validate
+bkt check file.bkt
+bkt check file.bkt --release          # strip @tests from the program
 
-- `name = expr` binds a local  
-- bare `print(…)` runs for effect  
-- the **last** expression is the return value  
+# run (dev: tests then entry; stdout = print only)
+bkt run file.bkt --arg 5
+bkt run file.bkt --arg 5 -v           # tests summary + => result
 
-### Types
-
-| Type | Literals | Useful ops |
-|---|---|---|
-| `Num` | `3`, `2.5` | `+ - * /` `< <= > >=` |
-| `Bool` | `true`, `false` | `&& \|\| !` `== !=` |
-| `Str` | `"hi"` | `+` (concat), `== !=` |
-
-```bash
-bkt run examples/types.bkt --arg world
-# hello, world
-# true
-```
-
-`--arg` is parsed according to the entry param type (`Num` / `Bool` / `Str`).
-
-### Tests
-
-```text
-@test combo(5) == 12
-@test combo(0) == 2
-combo(x: Num) -> Num "add one, then double" {
-  double(add_one(x))
-}
-```
-
-Each `@test` becomes a shadow `#t…` bucket in **dev** mode (the default). `bkt run` / `bkt check` execute them; failures abort the run. Expected values can be `Num`, `Bool`, or `Str`.
-
-Use **`--release`** to strip tests from the compiled program (no `#t…` buckets, entry only) — for a “final” build. Explicit `--dev` is the same as the default.
-
-### Lists, `if`, recursion
-
-```text
-@test sum([1, 2, 3]) == 6
-sum(xs: List[Num]) -> Num "sum all numbers" {
-  if list_len(xs) == 0 then 0
-  else list_nth(xs, 0) + sum(list_remove(xs, 0))
-}
-```
-
-Cores: `list_len`, `list_nth`, `list_append`, `list_concat`, `list_remove`. See [`examples/sum_list.bkt`](examples/sum_list.bkt).
-
-### Records (bootstrap new structures)
-
-Define shapes in contracts; construct with literals; access with `.field`. Constructor buckets are how the LLM grows the “stdlib” without new cores:
-
-```text
-point(x: Num, y: Num) -> { x: Num, y: Num } "construct a point" {
-  { x: x, y: y }
-}
-mag2(p: { x: Num, y: Num }) -> Num "squared magnitude" {
-  p.x * p.x + p.y * p.y
-}
-```
-
-See [`examples/records.bkt`](examples/records.bkt) (includes an optional-Num encoding via `{ ok, val }`).
-
-### LLM iterate loop
-
-```bash
-bkt context examples/sum_list.bkt --bucket sum
-bkt edit examples/sum_list.bkt --bucket sum --body 'if list_len(xs) == 0 then 0 else list_nth(xs, 0) + sum(list_remove(xs, 0))'
-# add --write to persist after tests pass
-```
-
-### Addresses vs labels
-
-Call by label or raw address (same slot):
-
-```text
-add_one(x)          // sugar
-#b00000001(x)       // machine view
-print(x)            // label for #c.print
-```
-
-Pin a slot yourself:
-
-```text
-#b0000000a add_one(x: Num) -> Num "adds one" {
-  x + 1
-}
-```
-
-## CLI cookbook
-
-```bash
-# validate (parse, types, contracts, complexity, @entry)
-bkt check path/to/file.bkt
-bkt check path/to/file.bkt --dev        # include @tests (default)
-bkt check path/to/file.bkt --release    # strip @tests from the program
-
-# run — default is dev: @tests then @entry. stdout = print only
-bkt run path/to/file.bkt
-bkt run path/to/file.bkt --arg 5
-bkt run path/to/file.bkt --arg hello          # Str entry
-bkt run path/to/file.bkt --arg true           # Bool entry
-echo 5 | bkt run path/to/file.bkt --stdin-arg
-bkt run path/to/file.bkt --arg 5 --release    # entry only, no tests
-
-# show extra run info
-bkt run file.bkt --arg 5 -v                   # tests + => result
-bkt run file.bkt --arg 5 --show-result
-bkt run file.bkt --arg 5 --show-tests
-
-# inspect layers (great for learning / debugging)
-bkt inspect file.bkt                          # everything (dev)
-bkt inspect file.bkt --release --manifest     # no #t… in dump
+# inspect layers / graph
 bkt inspect file.bkt --manifest --graph
-bkt inspect file.bkt --ast --labelled
-bkt inspect file.bkt --bucket combo --ast
-bkt inspect file.bkt --json | jq .entry
+bkt inspect file.bkt --graph-dot | dot -Tsvg -o g.svg
 
-# Graphviz
-brew install graphviz
-bkt inspect file.bkt --graph-dot | dot -Tsvg -o graph.svg
+# live edit loop
+bkt context file.bkt --bucket sum     # JSON pack: contract, body, tests, neighbors
+bkt edit file.bkt --bucket sum --body '…'           # dry-run + run related tests
+bkt edit file.bkt --bucket sum --body '…' --write   # persist if OK
 ```
 
-Unused params/locals warn on stderr (`--no-warn` to silence). Prefix with `_` if intentional (`_unused`).
+Profiles: default **dev** includes `#t…` tests; **`--release`** strips them (finished-product shape).
 
-Scratch without descriptions: `bkt check file.bkt --non-strict` (alias `--anon`).
+---
 
-## Bundled examples
+## Examples
 
-| File | What it shows |
+| File | Shows |
 |---|---|
-| [`examples/combo.bkt`](examples/combo.bkt) | Small graph, tests, locals, print |
-| [`examples/locals.bkt`](examples/locals.bkt) | Multiple prints from one entry |
-| [`examples/types.bkt`](examples/types.bkt) | `Str` / `Bool`, string concat, typed `--arg` |
-| [`examples/dans_first_bkt.bkt`](examples/dans_first_bkt.bkt) | Minimal `@test` + `@entry` |
-| [`examples/sum_list.bkt`](examples/sum_list.bkt) | `List[Num]`, `if`, recursion, `@test`s |
-| [`examples/records.bkt`](examples/records.bkt) | Records, ctors, optional encoding |
+| [`examples/combo.bkt`](examples/combo.bkt) | Small graph, tests, locals |
+| [`examples/sum_list.bkt`](examples/sum_list.bkt) | `List`, `if`, recursion |
+| [`examples/records.bkt`](examples/records.bkt) | `type`, records, punning, variants + `match` |
+| [`examples/math.bkt`](examples/math.bkt) | `**` / cores + bootstrapped `fact` `gcd` `sqrt` |
+| [`examples/locals.bkt`](examples/locals.bkt) | Multiple `print`s |
+| [`examples/types.bkt`](examples/types.bkt) | `Str` / `Bool` |
+| [`examples/dans_first_bkt.bkt`](examples/dans_first_bkt.bkt) | Minimal first program |
 
-Try:
+Full syntax: [`SPEC.md`](SPEC.md).
 
-```bash
-bkt run examples/combo.bkt --arg 5
-bkt inspect examples/combo.bkt --graph
-bkt run examples/types.bkt --arg Ada
-```
+---
 
-## Language cheatsheet
+## Roadmap (short)
 
-```text
-@test name(args) == expected
-@entry
-name(x: Num, flag: Bool, s: Str) -> Str "what this slot does" {
-  y = x + 1
-  ok = flag && (y > 0)
-  print(ok)
-  "hello, " + s
-}
-```
+**Done enough for bootstrap + iterate:** buckets, graph, tests, lists, records, variants, math cores, `context`/`edit`.
 
-Full grammar and rules: [SPEC.md](SPEC.md).
+**Next:** richer agent driver (scratchpad + edit loop), then AOT `bkt build` to a binary.
 
-## Status
+**Deferred:** row polymorphism, heap/`Ptr` globals story, multi-file projects.
 
-Prototype / research code. Expect breaking changes. Useful today for experimenting with bucket-shaped programs, call graphs, and small typed expression bodies.
+---
 
-Yes — this was **vibecoded with [Cursor](https://cursor.com)** to get something running quickly. The ideas are intentional; the implementation is an early sketch, not polished systems engineering. PRs and sharp edges welcome.
+## Note
 
-## License
-
-MIT (see `Cargo.toml`).
+Early prototype, vibecoded with [Cursor](https://cursor.com). Ideas intentional; implementation still a sketch. PRs and sharp edges welcome.
