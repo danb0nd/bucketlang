@@ -12,7 +12,7 @@ fn strict_dev() -> CompileOptions {
 
 #[test]
 fn module_import_example() {
-    let compiled = compile_file(Path::new("examples/modules/app.bkt"), strict_dev()).unwrap();
+    let compiled = compile_file(Path::new("../../examples/modules/app.bkt"), strict_dev()).unwrap();
     assert_eq!(compiled.module.as_deref(), Some("app"));
     assert!(compiled.imports.iter().any(|i| i.module == "util" && i.item.is_none()));
     assert!(compiled
@@ -50,7 +50,7 @@ fn import_item_alias_only() {
     main() -> Num "call alias" { foofoo(3) }
     "#;
     let compiled =
-        compile_with_base(src, strict_dev(), Path::new("examples/modules/app.bkt")).unwrap();
+        compile_with_base(src, strict_dev(), Path::new("../../examples/modules/app.bkt")).unwrap();
     assert_eq!(
         compiled.registry.label_to_id.get("foofoo"),
         compiled.registry.label_to_id.get("util::double")
@@ -63,7 +63,7 @@ fn import_item_alias_only() {
 
 #[test]
 fn import_does_not_leak_bare_labels() {
-    let compiled = compile_file(Path::new("examples/modules/app.bkt"), strict_dev()).unwrap();
+    let compiled = compile_file(Path::new("../../examples/modules/app.bkt"), strict_dev()).unwrap();
     assert!(compiled.registry.label_to_id.contains_key("util::double"));
     assert!(compiled.registry.label_to_id.contains_key("dbl"));
     // bare name from util stays inside util; importer must use path or alias
@@ -109,7 +109,7 @@ fn whole_module_import_requires_qualified_or_alias() {
     @entry
     main() -> Num "bare should fail" { double(3) }
     "#;
-    assert!(compile_with_base(src, strict_dev(), Path::new("examples/modules/app.bkt")).is_err());
+    assert!(compile_with_base(src, strict_dev(), Path::new("../../examples/modules/app.bkt")).is_err());
 
     let src2 = r#"
     module app
@@ -118,7 +118,7 @@ fn whole_module_import_requires_qualified_or_alias() {
     main() -> Num "qualified ok" { util::double(3) }
     "#;
     let compiled =
-        compile_with_base(src2, strict_dev(), Path::new("examples/modules/app.bkt")).unwrap();
+        compile_with_base(src2, strict_dev(), Path::new("../../examples/modules/app.bkt")).unwrap();
     let entry = compiled.registry.entry.as_deref().unwrap();
     let mut out = Vec::new();
     assert_eq!(

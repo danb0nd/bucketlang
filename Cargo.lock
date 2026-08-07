@@ -53,6 +53,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bkt"
+version = "0.1.0"
+dependencies = [
+ "bucket-harness",
+ "bucketlang",
+ "clap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -62,10 +73,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bucket-harness"
+version = "0.1.0"
+dependencies = [
+ "bucketlang",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bucketlang"
 version = "0.1.0"
 dependencies = [
- "clap",
  "serde",
  "serde_json",
  "sha2",

@@ -11,7 +11,7 @@ fn strict_dev() -> CompileOptions {
 
 #[test]
 fn sum_list_example() {
-    let src = std::fs::read_to_string("examples/sum_list.bkt").unwrap();
+    let src = std::fs::read_to_string("../../examples/sum_list.bkt").unwrap();
     let compiled = compile(&src, strict_dev()).unwrap();
     let reg = &compiled.registry;
     let mut out = Vec::new();

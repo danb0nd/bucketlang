@@ -5,7 +5,7 @@ pub mod complexity;
 pub mod error;
 pub mod eval;
 pub mod graph;
-pub mod harness;
+pub mod edit;
 pub mod lexer;
 pub mod lint;
 pub mod parser;

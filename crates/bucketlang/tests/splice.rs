@@ -7,7 +7,7 @@
 //! corrupting the file. Each test below pins one of those cases.
 
 use bucketlang::compile::{compile, BuildProfile, CompileOptions};
-use bucketlang::harness::{only_target_changed, splice_bucket_body, user_hashes};
+use bucketlang::edit::{only_target_changed, splice_bucket_body, user_hashes};
 use bucketlang::lexer::tokenize;
 use bucketlang::registry::Registry;
 

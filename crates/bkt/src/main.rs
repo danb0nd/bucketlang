@@ -3,10 +3,8 @@ use bucketlang::canonical::canonical_repr;
 use bucketlang::compile::{compile_file, compile_with_base, BuildProfile, CompileOptions};
 use bucketlang::eval::eval_bucket;
 use bucketlang::graph::{build_graph, to_dot};
-use bucketlang::harness::{
-    build_context, only_target_changed, run_subject_tests, splice_bucket_body, user_hashes,
-    EditResult,
-};
+use bucket_harness::{build_context, EditResult};
+use bucketlang::edit::{only_target_changed, run_subject_tests, splice_bucket_body, user_hashes};
 use bucketlang::lint::unused_warnings;
 use bucketlang::render::{render_labelled, render_raw};
 use bucketlang::value::{parse_arg, Value};
@@ -128,6 +126,32 @@ enum Commands {
         bucket: String,
         #[arg(long, default_value_t = 1)]
         depth: usize,
+        #[arg(long = "non-strict", alias = "anon")]
+        non_strict: bool,
+    },
+    /// Run the verified edit loop: retrieve context, propose, gate, retry.
+    ///
+    /// Proposals come from `--body` (repeatable, tried in order), which is the
+    /// scripted agent. It exists so the loop and its gates can be exercised end
+    /// to end without a model in the way.
+    Loop {
+        file: PathBuf,
+        #[arg(long)]
+        bucket: String,
+        /// What the edit is meant to achieve; goes into the request.
+        #[arg(long, default_value = "")]
+        goal: String,
+        /// A candidate body. Repeat to script a retry sequence.
+        #[arg(long = "body")]
+        bodies: Vec<String>,
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        /// Persist the accepted source.
+        #[arg(long)]
+        write: bool,
+        /// Print the request the agent would receive, then stop.
+        #[arg(long)]
+        show_context: bool,
         #[arg(long = "non-strict", alias = "anon")]
         non_strict: bool,
     },
@@ -572,6 +596,60 @@ fn real_main() -> Result<(), String> {
             pack.file_hint = file.display().to_string();
             println!("{}", serde_json::to_string_pretty(&pack).unwrap());
             Ok(())
+        }
+        Commands::Loop {
+            file,
+            bucket,
+            goal,
+            bodies,
+            depth,
+            write,
+            show_context,
+            non_strict,
+        } => {
+            let src = read_source(&file)?;
+            let o = bucket_harness::LoopOptions {
+                max_attempts: bodies.len().max(1),
+                depth,
+                strict: !non_strict,
+                base_file: if file.as_os_str() == "-" {
+                    None
+                } else {
+                    Some(file.clone())
+                },
+            };
+
+            if show_context {
+                let compiled = compile_input(&file, opts(non_strict, false))?;
+                let pack = build_context(&compiled.registry, &bucket, depth)
+                    .map_err(|e| e.to_string())?;
+                print!("{}", pack.render());
+                return Ok(());
+            }
+
+            if bodies.is_empty() {
+                return Err("provide at least one --body proposal".into());
+            }
+            let mut agent = bucket_harness::ScriptedAgent::new(bodies);
+            let outcome = bucket_harness::run_edit(&src, &bucket, &goal, &mut agent, &o)?;
+
+            if outcome.ok && write {
+                if file.as_os_str() == "-" {
+                    return Err("--write requires a real file path".into());
+                }
+                if let Some(s) = &outcome.source {
+                    std::fs::write(&file, s).map_err(|e| e.to_string())?;
+                }
+            }
+            println!("{}", serde_json::to_string_pretty(&outcome).unwrap());
+            if outcome.ok {
+                Ok(())
+            } else {
+                Err(format!(
+                    "edit rejected after {} attempt(s)",
+                    outcome.attempts.len()
+                ))
+            }
         }
         Commands::Edit {
             file,

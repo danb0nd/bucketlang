@@ -11,7 +11,7 @@ fn strict_dev() -> CompileOptions {
 
 #[test]
 fn combo_five_is_twelve() {
-    let src = std::fs::read_to_string("examples/combo.bkt").unwrap();
+    let src = std::fs::read_to_string("../../examples/combo.bkt").unwrap();
     let compiled = compile(&src, strict_dev()).unwrap();
     let reg = &compiled.registry;
     assert!(reg.entry.is_some());
@@ -36,7 +36,7 @@ fn combo_five_is_twelve() {
 
 #[test]
 fn release_strips_tests() {
-    let src = std::fs::read_to_string("examples/combo.bkt").unwrap();
+    let src = std::fs::read_to_string("../../examples/combo.bkt").unwrap();
     let compiled = compile(
         &src,
         CompileOptions {

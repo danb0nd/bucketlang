@@ -1,167 +1,17 @@
+//! Editing a bucket in place, and the primitives that make an edit safe.
+//!
+//! This is language-side because every operation here needs the grammar: the
+//! splice cuts at a span the parser recorded, and the oracles rely on the
+//! registry's notion of bucket identity. What is *not* here is policy — how much
+//! context to retrieve, when to retry, which IR level to encode at. That belongs
+//! to a harness, which can evolve without touching the language.
+
 use crate::ast::BucketKind;
 use crate::error::{Error, Result};
 use crate::eval::eval_bucket;
-use crate::graph::build_graph;
 use crate::registry::Registry;
-use crate::render::render_labelled;
-use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
-
-#[derive(Debug, Serialize)]
-pub struct ContextPack {
-    pub file_hint: String,
-    pub target: ContextBucket,
-    pub callees: Vec<ContextBucket>,
-    pub callers: Vec<ContextRef>,
-    pub tests: Vec<ContextTest>,
-    pub cores_used: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ContextBucket {
-    pub address: String,
-    pub label: Option<String>,
-    pub desc: String,
-    pub contract: String,
-    pub body_labelled: String,
-    pub kind: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ContextRef {
-    pub address: String,
-    pub label: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ContextTest {
-    pub address: String,
-    pub desc: String,
-    pub subject: Option<String>,
-    pub body_labelled: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct EditResult {
-    pub ok: bool,
-    pub bucket: String,
-    pub tests_run: usize,
-    pub tests_passed: usize,
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub diff: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prints: Option<Vec<String>>,
-    /// Present on successful dry-run (no `--write`)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-}
-
-fn contract_str(b: &crate::ast::Bucket) -> String {
-    let params: Vec<String> = b
-        .contract
-        .params
-        .iter()
-        .map(|p| format!("{}: {}", p.name, p.ty.name()))
-        .collect();
-    format!("({}) -> {}", params.join(", "), b.contract.ret.name())
-}
-
-fn bucket_pack(reg: &Registry, addr: &str) -> Option<ContextBucket> {
-    let b = reg.get(addr)?;
-    Some(ContextBucket {
-        address: b.address.clone(),
-        label: b.label.clone(),
-        desc: b.desc.clone(),
-        contract: contract_str(b),
-        body_labelled: render_labelled(&b.body, reg),
-        kind: match b.kind {
-            BucketKind::User => "user".into(),
-            BucketKind::Test => "test".into(),
-            BucketKind::Core => "core".into(),
-        },
-    })
-}
-
-pub fn build_context(reg: &Registry, target: &str, depth: usize) -> Result<ContextPack> {
-    let addr = reg
-        .resolve_target(target)
-        .ok_or_else(|| Error::msg(format!("unknown bucket {target}")))?;
-    let g = build_graph(reg);
-    let node = g
-        .get(&addr)
-        .ok_or_else(|| Error::msg(format!("no graph node for {addr}")))?;
-
-    let mut callees = Vec::new();
-    let mut cores_used = BTreeSet::new();
-    let mut frontier: Vec<(String, usize)> = node.out.iter().cloned().map(|a| (a, 1)).collect();
-    let mut seen = BTreeSet::from([addr.clone()]);
-
-    while let Some((id, d)) = frontier.pop() {
-        if d > depth || !seen.insert(id.clone()) {
-            continue;
-        }
-        if let Some(b) = reg.get(&id) {
-            match b.kind {
-                BucketKind::Core => {
-                    cores_used.insert(id);
-                }
-                BucketKind::User => {
-                    callees.push(bucket_pack(reg, &id).unwrap());
-                    if d < depth {
-                        if let Some(n) = g.get(&id) {
-                            for o in &n.out {
-                                frontier.push((o.clone(), d + 1));
-                            }
-                        }
-                    }
-                }
-                BucketKind::Test => {}
-            }
-        }
-    }
-    callees.sort_by(|a, b| a.address.cmp(&b.address));
-
-    let mut callers = Vec::new();
-    for c in &node.inn {
-        if let Some(b) = reg.get(c) {
-            if b.kind == BucketKind::User {
-                callers.push(ContextRef {
-                    address: b.address.clone(),
-                    label: b.label.clone(),
-                });
-            }
-        }
-    }
-
-    let subject_label = reg.get(&addr).and_then(|b| b.label.clone());
-    let mut tests = Vec::new();
-    for tid in &reg.test_ids {
-        if let Some(b) = reg.get(tid) {
-            let related = b.subject.as_ref().is_some_and(|s| {
-                s == &addr || subject_label.as_ref().is_some_and(|l| l == s)
-            });
-            if related {
-                tests.push(ContextTest {
-                    address: b.address.clone(),
-                    desc: b.desc.clone(),
-                    subject: b.subject.clone(),
-                    body_labelled: render_labelled(&b.body, reg),
-                });
-            }
-        }
-    }
-
-    Ok(ContextPack {
-        file_hint: String::new(),
-        target: bucket_pack(reg, &addr).unwrap(),
-        callees,
-        callers,
-        tests,
-        cores_used: cores_used.into_iter().collect(),
-    })
-}
 
 /// Address -> content hash for user buckets. Test ids are synthesized and may
 /// renumber; cores never change. Neither belongs in an atomicity check.

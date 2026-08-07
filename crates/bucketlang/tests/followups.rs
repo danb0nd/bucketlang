@@ -12,7 +12,7 @@ fn strict_dev() -> CompileOptions {
 
 #[test]
 fn nested_std_option_package() {
-    let compiled = compile_file(Path::new("examples/packages/app.bkt"), strict_dev()).unwrap();
+    let compiled = compile_file(Path::new("../../examples/packages/app.bkt"), strict_dev()).unwrap();
     assert!(compiled.registry.label_to_id.contains_key("std::option::unwrap_or"));
     assert!(compiled.registry.buckets.contains_key("#std::option::b00000001"));
     assert!(compiled.parametric_aliases.contains_key("Option"));

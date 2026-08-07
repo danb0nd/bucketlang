@@ -72,8 +72,27 @@ In `std::core`: name helpers like `to_string_point` — **convention for LLMs**,
 | `inspect` | Tokens, AST, graph, … |
 | `context` / `edit` | LLM iterate loop |
 
+## Diagnostics
+
+Every expression carries a source span, so errors name a bucket *and* a line:
+
+```text
+error[type_mismatch]: expected Num, found Str
+  --> examples/types.bkt:14:9  in bucket main (#b00000003)
+   |
+14 |   msg = "hello, " + name
+   |         ^^^^^^^^^
+```
+
+Each diagnostic carries `stage`, a stable `code`, `bucket` + `bucket_label`,
+`line`/`col`, `expected`/`found`, and a `hint` — as fields, so the edit loop
+routes on them without parsing prose. `bucket` is the one that matters most: it
+feeds straight back into `bkt context --bucket`, which is what keeps a fix
+scoped to one bucket instead of a file rewrite.
+
 ## Not yet
 
 - Generic bucket signatures `foo[T](…)`
 - Compiler traits / method dispatch
+- IR codec levels L1–L5 (only L0, plain source, is implemented)
 - AOT `bkt build`, heap/`Ptr`, package registry

@@ -25,10 +25,31 @@ Bucketlang’s bet:
 This repo is the **language + `bkt` CLI**. The full multi-step agent driver is next, not done yet.
 
 ```text
-.bkt source ──► compile (Registry IR) ──► interpret (harness / dev)
+.bkt source ──► compile (Registry IR) ──► interpret (dev)
                          │
                          └──► AOT binary (planned)
 ```
+
+## Layout
+
+Two crates, deliberately separate, because they are answering different
+questions. The language has to be **correct**; the harness is an **experiment**
+whose whole point is finding where compression breaks correctness. Fusing them
+would mean the language's tests depend on codec behaviour, and that you cannot
+change retrieval or encoding without rebuilding the compiler.
+
+```text
+crates/
+  bucketlang/   the language — lexer, parser, types, eval, registry, graph
+                plus the grammar-aware parts of an edit: splice-by-span,
+                run-a-bucket's-tests, the atomicity oracle
+  harness/      the experiment — what context to retrieve, how to render it,
+                when to retry, and what it all cost in tokens
+  bkt/          the CLI over both
+```
+
+The rule: **the language owns anything that needs to know the grammar; the
+harness owns anything that is a policy or measurement choice.**
 
 ---
 
@@ -38,7 +59,7 @@ This repo is the **language + `bkt` CLI**. The full multi-step agent driver is n
 git clone https://github.com/danb0nd/bucketlang.git
 cd bucketlang
 cargo build --release
-alias bkt=./target/release/bkt
+alias bkt=./target/release/bkt          # workspace root output
 
 bkt check examples/combo.bkt
 bkt run examples/combo.bkt --arg 5          # prints 12
@@ -154,7 +175,28 @@ bkt inspect file.bkt --graph-dot | dot -Tsvg -o g.svg
 bkt context file.bkt --bucket sum     # JSON pack: contract, body, tests, neighbors
 bkt edit file.bkt --bucket sum --body '…'           # dry-run + run related tests
 bkt edit file.bkt --bucket sum --body '…' --write   # persist if OK
+
+# the verified loop: retrieve → propose → gate → feed back → retry
+bkt loop file.bkt --bucket sum --show-context       # exactly what an agent sees
+bkt loop file.bkt --bucket sum --goal "…" \
+    --body 'first try' --body 'second try'          # scripted agent, JSON outcome
 ```
+
+### The three gates
+
+Nothing is written until a proposed body passes all of them:
+
+| Gate | Catches |
+|---|---|
+| **compile** | it doesn't parse or typecheck |
+| **atomicity** | it changed a bucket other than the target |
+| **behaviour** | the bucket's own `@test` cases no longer pass |
+
+The atomicity gate is the non-obvious one. A body is untrusted text; if it closes
+its own brace it can define, delete, or rewrite a neighbour while still
+compiling and still passing the target's tests. It is checked by comparing every
+user bucket's content hash before and after — which works precisely because
+**addresses are fixed**, not derived from content.
 
 Profiles: default **dev** includes `#t…` tests; **`--release`** strips them (finished-product shape).
 
