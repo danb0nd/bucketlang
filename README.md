@@ -63,7 +63,7 @@ bkt run examples/modules/app.bkt            # import util::…
 | `type Name = …` | Type aliases |
 | `None \| Some(Num)` | Tagged variants + `match` |
 | `if` / recursion | Control + algorithms |
-| `module` / `import` | Multi-file; addresses become `#mod/b…`; calls use `mod::name` |
+| `module` / `import` | Multi-file; `#mod::b…`; `mod::name` or `import mod::name as alias` |
 | `**` `pow` `mod` `floor` `abs` | Math cores; more via buckets |
 
 ### Modules
@@ -78,18 +78,20 @@ double(x: Num) -> Num "×2" { x * 2 }
 // app.bkt
 module app
 import util
+import util::double as dbl
 
 @entry
 main() -> Num "use util" {
-  util::double(21)          // label path
-  // machine: #util/b00000001(21)
+  dbl(21)                   // import alias
+  util::double(21)          // qualified path
+  // machine: #util::b00000001(21)
 }
 ```
 
 | Inside module `util` | Linked / from outside |
 |---|---|
-| `#util/b00000001` | same |
-| label `double` | `util::double` |
+| `#util::b00000001` | same |
+| label `double` | `util::double` / alias (`dbl`) — not bare `double` |
 
 No module decl → classic `#b00000001` (single-file programs).
 

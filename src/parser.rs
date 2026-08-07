@@ -130,7 +130,7 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
-    fn parse_import_decl(&mut self) -> Result<String> {
+    fn parse_import_decl(&mut self) -> Result<crate::ast::ImportDecl> {
         let t0 = self.peek().clone();
         self.expect(TokenKind::Ident)?; // import
         if t0.text != "import" {
@@ -145,9 +145,59 @@ impl<'a> Parser<'a> {
                 "expected module name to import",
             ));
         }
-        let name = self.bump().text.clone();
-        validate_ident(&name, name_tok.line, name_tok.col)?;
-        Ok(name)
+        let module = self.bump().text.clone();
+        validate_ident(&module, name_tok.line, name_tok.col)?;
+
+        let item = if self.peek().kind == TokenKind::ColonColon {
+            self.bump();
+            let item_tok = self.peek().clone();
+            if item_tok.kind != TokenKind::Ident {
+                return Err(Error::at(
+                    "parse",
+                    item_tok.line,
+                    item_tok.col,
+                    "expected name after '::' in import",
+                ));
+            }
+            let item = self.bump().text.clone();
+            validate_ident(&item, item_tok.line, item_tok.col)?;
+            Some(item)
+        } else {
+            None
+        };
+
+        let alias = if self.peek().kind == TokenKind::Ident && self.peek().text == "as" {
+            if item.is_none() {
+                let t = self.peek();
+                return Err(Error::at(
+                    "parse",
+                    t.line,
+                    t.col,
+                    "`as` requires an item import (e.g. import util::double as dbl)",
+                ));
+            }
+            self.bump(); // as
+            let alias_tok = self.peek().clone();
+            if alias_tok.kind != TokenKind::Ident {
+                return Err(Error::at(
+                    "parse",
+                    alias_tok.line,
+                    alias_tok.col,
+                    "expected alias name after 'as'",
+                ));
+            }
+            let alias = self.bump().text.clone();
+            validate_ident(&alias, alias_tok.line, alias_tok.col)?;
+            Some(alias)
+        } else {
+            None
+        };
+
+        Ok(crate::ast::ImportDecl {
+            module,
+            item,
+            alias,
+        })
     }
 
     fn parse_type_alias(&mut self) -> Result<RawTypeAlias> {
@@ -235,7 +285,7 @@ impl<'a> Parser<'a> {
         Ok((target, args))
     }
 
-    /// `name`, `mod::name`, or `#addr` / `#mod/b…`
+    /// `name`, `mod::name`, or `#addr` / `#mod::b…`
     fn parse_path_name(&mut self) -> Result<String> {
         let t = self.peek().clone();
         match t.kind {
@@ -1004,7 +1054,7 @@ pub fn validate_ident(name: &str, line: usize, col: usize) -> Result<()> {
     }
     match name {
         "Num" | "Bool" | "Str" | "List" | "print" | "true" | "false" | "if" | "then" | "else"
-        | "type" | "match" | "module" | "import" => Err(Error::at(
+        | "type" | "match" | "module" | "import" | "as" => Err(Error::at(
             "lex",
             line,
             col,

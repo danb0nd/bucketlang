@@ -263,11 +263,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     "expected address after #",
                 ));
             }
+            // Addresses: #b…, #c.name, #mod::b… (':' for module paths matching imports)
             while j < chars.len()
                 && (chars[j].is_ascii_alphanumeric()
                     || chars[j] == '_'
                     || chars[j] == '.'
-                    || chars[j] == '/')
+                    || chars[j] == ':')
             {
                 j += 1;
             }

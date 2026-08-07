@@ -11,7 +11,7 @@ Programs are **graphs of small typed functions (“buckets”)** with stable add
 | Idea | Reality today |
 |---|---|
 | Bucket | Function-like slot: label, `"desc"`, `(args) -> Ret`, body |
-| Address | `#b…` / `#mod/b…` (user), `#t…` / `#mod/t…` (tests), `#c.*` (cores) |
+| Address | `#b…` / `#mod::b…` (user), `#t…` / `#mod::t…` (tests), `#c.*` (cores) |
 | Label | Sugar for an address (`double` → `#b…`) |
 | Graph | Edges from calls; `bkt inspect --graph` |
 | Strict mode | Label + non-empty desc required (default) |
@@ -44,10 +44,13 @@ Programs are **graphs of small typed functions (“buckets”)** with stable add
 ## Modules
 
 ```text
-module util          // prefixes addresses #util/b…
-import util          // loads util.bkt or util/mod.bkt
-util::double(3)      // cross-module call
+module util                 // prefixes addresses #util::b…
+import util                 // loads util.bkt or util/mod.bkt
+import util::double as dbl  // local alias → same address
+dbl(3)                      // or util::double(3)
 ```
+
+Bare labels stay inside their module. Importers see `mod::name` and explicit aliases only — so two modules can both define `foo`.
 
 No `module` → single-file `#b…` addresses (fine for small examples).
 

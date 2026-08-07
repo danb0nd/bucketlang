@@ -166,10 +166,20 @@ pub struct RawTypeAlias {
     pub ty: Type,
 }
 
+/// `import util` or `import util::double as dbl`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ImportDecl {
+    pub module: String,
+    /// `None` = whole-module import (`import util`).
+    pub item: Option<String>,
+    /// Local name for an item import. Defaults to `item` when omitted.
+    pub alias: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RawProgram {
     pub module: Option<String>,
-    pub imports: Vec<String>,
+    pub imports: Vec<ImportDecl>,
     pub aliases: Vec<RawTypeAlias>,
     pub buckets: Vec<RawBucket>,
 }

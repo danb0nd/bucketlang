@@ -6,7 +6,7 @@ Expression-oriented language of **addressable buckets** (virtual memory slots) w
 
 | Axis | Role |
 |---|---|
-| Address `#b…` / `#t…` / `#c.*` | Stable identity (virtual memory handle) |
+| Address `#b…` / `#mod::b…` / `#t…` / `#c.*` | Stable identity (virtual memory handle) |
 | Label | Optional sugar → address |
 | Desc | `"…"` string right after the return type (strict: required) |
 | Contract | `(name: Type, …) -> Type` |
@@ -142,13 +142,17 @@ double(x: Num) -> Num "…" { x * 2 }
 
 module app
 import util
+import util::double as dbl
 @entry
-main() -> Num "…" { util::double(3) }
+main() -> Num "…" { dbl(3) }   // or util::double(3)
 ```
 
 - `import name` loads `name.bkt` or `name/mod.bkt` beside the importing file.
-- With `module util`, user/test addresses mint as `#util/b…` / `#util/t…` (unprefixed `#b…` if no module).
-- Calls: `util::double(...)` or `#util/b00000001(...)`.
+- `import name::item as alias` binds a local label to that item (omit `as` → local name is `item`).
+- Same module file is loaded once even with several item imports.
+- Imported buckets are only reachable as `mod::name`, an explicit import alias, or `#mod::b…` — bare labels do **not** leak across modules (so two modules can both define `foo`).
+- With `module util`, user/test addresses mint as `#util::b…` / `#util::t…` (unprefixed `#b…` if no module). Same `::` as import/call paths; `#` marks the opaque slot.
+- Calls: `util::double(...)`, an import alias, or `#util::b00000001(...)`.
 - Imported `@entry` is ignored; root entry wins. Imported `@test`s still run in dev.
 
 Buckets may call themselves (recursion) or each other; eval aborts past depth 256.

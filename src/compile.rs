@@ -1,4 +1,6 @@
-use crate::ast::{Bucket, BucketKind, Contract, Expr, MatchArm, RawBucket, RawProgram, Type};
+use crate::ast::{
+    Bucket, BucketKind, Contract, Expr, ImportDecl, MatchArm, RawBucket, RawProgram, Type,
+};
 use crate::canonical::content_hash;
 use crate::complexity::{measure, within_budget};
 use crate::error::{Error, Result};
@@ -46,7 +48,7 @@ pub struct CompileResult {
     /// Resolved type aliases (RHS fully expanded).
     pub type_aliases: BTreeMap<String, Type>,
     pub module: Option<String>,
-    pub imports: Vec<String>,
+    pub imports: Vec<ImportDecl>,
 }
 
 /// Compile a single source string (no `import` resolution).
@@ -128,31 +130,57 @@ fn compile_source(
 
     let mut prelude = Registry::with_cores();
     let mut merged_aliases = BTreeMap::new();
+    let mut loaded_modules: BTreeSet<String> = BTreeSet::new();
     for imp in &program.imports {
-        let imp_path = resolve_import_path(path.unwrap(), imp)?;
-        let imported = compile_path(&imp_path, opts, stack)?;
-        match &imported.module {
-            Some(m) if m == imp => {}
-            Some(m) => {
-                return Err(Error::msg(format!(
-                    "import '{imp}' but file declares module '{m}'"
-                )));
+        let mod_name = &imp.module;
+        if loaded_modules.insert(mod_name.clone()) {
+            let imp_path = resolve_import_path(path.unwrap(), mod_name)?;
+            let imported = compile_path(&imp_path, opts, stack)?;
+            match &imported.module {
+                Some(m) if m == mod_name => {}
+                Some(m) => {
+                    return Err(Error::msg(format!(
+                        "import '{mod_name}' but file declares module '{m}'"
+                    )));
+                }
+                None => {
+                    return Err(Error::msg(format!(
+                        "imported file {} must declare `module {mod_name}`",
+                        imp_path.display()
+                    )));
+                }
             }
-            None => {
-                return Err(Error::msg(format!(
-                    "imported file {} must declare `module {imp}`",
-                    imp_path.display()
-                )));
+            merge_registry(&mut prelude, &imported.registry)?;
+            for (k, v) in imported.type_aliases {
+                if merged_aliases.contains_key(&k) {
+                    return Err(Error::msg(format!(
+                        "duplicate type alias '{k}' from import '{mod_name}'"
+                    )));
+                }
+                merged_aliases.insert(k, v);
             }
         }
-        merge_registry(&mut prelude, &imported.registry)?;
-        for (k, v) in imported.type_aliases {
-            if merged_aliases.contains_key(&k) {
+    }
+
+    for imp in &program.imports {
+        if let Some(item) = &imp.item {
+            let qualified = format!("{}::{item}", imp.module);
+            let Some(id) = prelude.label_to_id.get(&qualified).cloned() else {
                 return Err(Error::msg(format!(
-                    "duplicate type alias '{k}' from import '{imp}'"
+                    "import '{qualified}': no such label in module '{}'",
+                    imp.module
                 )));
+            };
+            let local = imp.alias.clone().unwrap_or_else(|| item.clone());
+            if let Some(existing) = prelude.label_to_id.get(&local) {
+                if existing != &id {
+                    return Err(Error::msg(format!(
+                        "import alias '{local}' conflicts with an existing label"
+                    )));
+                }
+            } else {
+                prelude.label_to_id.insert(local, id);
             }
-            merged_aliases.insert(k, v);
         }
     }
 
@@ -198,15 +226,20 @@ fn merge_registry(into: &mut Registry, from: &Registry) -> Result<()> {
     }
     for (label, id) in &from.label_to_id {
         if into.label_to_id.contains_key(label) {
-            // allow same qualified label mapping to same id only
+            // allow same qualified/core label mapping to same id only
             if into.label_to_id.get(label) != Some(id) {
                 return Err(Error::msg(format!(
                     "label collision while linking: {label}"
                 )));
             }
-        } else {
-            into.label_to_id.insert(label.clone(), id.clone());
+            continue;
         }
+        // Do not re-export bare labels across module boundaries.
+        // Importers see `mod::name` (and explicit `import … as` aliases).
+        if !label.contains("::") {
+            continue;
+        }
+        into.label_to_id.insert(label.clone(), id.clone());
     }
     for tid in &from.test_ids {
         if !into.test_ids.contains(tid) {
@@ -339,13 +372,13 @@ fn lower(
 
     let mint_user = |n: u64| -> String {
         match module {
-            Some(m) => format!("#{m}/b{n:08x}"),
+            Some(m) => format!("#{m}::b{n:08x}"),
             None => format!("#b{n:08x}"),
         }
     };
     let mint_test = |n: u64| -> String {
         match module {
-            Some(m) => format!("#{m}/t{n:08x}"),
+            Some(m) => format!("#{m}::t{n:08x}"),
             None => format!("#t{n:08x}"),
         }
     };
@@ -522,9 +555,14 @@ fn lower(
 }
 
 fn normalize_manual_addr(addr: &str, module: Option<&str>) -> Result<String> {
+    if addr.contains('/') {
+        return Err(Error::msg(format!(
+            "manual address must use :: for modules (e.g. #mod::b00000001), got {addr}"
+        )));
+    }
     match module {
         None => {
-            if addr.starts_with("#b") && !addr.contains('/') {
+            if addr.starts_with("#b") && !addr.contains("::") {
                 Ok(addr.to_string())
             } else {
                 Err(Error::msg(format!(
@@ -533,14 +571,14 @@ fn normalize_manual_addr(addr: &str, module: Option<&str>) -> Result<String> {
             }
         }
         Some(m) => {
-            let prefix = format!("#{m}/b");
+            let prefix = format!("#{m}::b");
             if addr.starts_with(&prefix) {
                 Ok(addr.to_string())
-            } else if addr.starts_with("#b") && !addr.contains('/') {
-                Ok(format!("#{m}/{}", &addr[1..]))
+            } else if addr.starts_with("#b") && !addr.contains("::") {
+                Ok(format!("#{m}::{}", &addr[1..]))
             } else {
                 Err(Error::msg(format!(
-                    "manual address in module {m} must be #b… or #{m}/b…, got {addr}"
+                    "manual address in module {m} must be #b… or #{m}::b…, got {addr}"
                 )))
             }
         }
