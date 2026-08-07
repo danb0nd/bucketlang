@@ -1,0 +1,21 @@
+module std::option
+
+type Option[T] = None | Some(T)
+
+@test unwrap_or(None, 7) == 7
+@test unwrap_or(Some(9), 7) == 9
+unwrap_or(o: Option[Num], d: Num) -> Num "default if None" {
+  match o {
+    None => d,
+    Some(v) => v
+  }
+}
+
+@test unwrap_str(None, "x") == "x"
+@test unwrap_str(Some("hi"), "x") == "hi"
+unwrap_str(o: Option[Str], d: Str) -> Str "default if None (Str)" {
+  match o {
+    None => d,
+    Some(v) => v
+  }
+}

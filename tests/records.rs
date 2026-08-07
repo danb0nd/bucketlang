@@ -15,7 +15,13 @@ fn records_example() {
     let compiled = compile(&src, strict_dev()).unwrap();
     let mut out = Vec::new();
     for tid in &compiled.registry.test_ids {
-        eval_bucket(&compiled.registry, tid, &[], &mut out).unwrap();
+        let tb = compiled.registry.get(tid).unwrap();
+        let result = eval_bucket(&compiled.registry, tid, &[], &mut out);
+        if tb.expect_error {
+            assert!(result.is_err(), "expected error for {tid}");
+        } else {
+            result.unwrap();
+        }
     }
     let entry = compiled.registry.entry.as_deref().unwrap();
     let mut out2 = Vec::new();

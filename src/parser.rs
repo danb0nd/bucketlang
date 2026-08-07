@@ -116,6 +116,11 @@ impl<'a> Parser<'a> {
         if t0.text != "module" {
             return Err(Error::at("parse", t0.line, t0.col, "expected module"));
         }
+        self.parse_module_path()
+    }
+
+    /// `ident (:: ident)*` joined with `::`.
+    fn parse_module_path(&mut self) -> Result<String> {
         let name_tok = self.peek().clone();
         if name_tok.kind != TokenKind::Ident {
             return Err(Error::at(
@@ -125,9 +130,25 @@ impl<'a> Parser<'a> {
                 "expected module name",
             ));
         }
-        let name = self.bump().text.clone();
-        validate_ident(&name, name_tok.line, name_tok.col)?;
-        Ok(name)
+        let mut path = self.bump().text.clone();
+        validate_ident(&path, name_tok.line, name_tok.col)?;
+        while self.peek().kind == TokenKind::ColonColon {
+            self.bump();
+            let seg_tok = self.peek().clone();
+            if seg_tok.kind != TokenKind::Ident {
+                return Err(Error::at(
+                    "parse",
+                    seg_tok.line,
+                    seg_tok.col,
+                    "expected name after '::'",
+                ));
+            }
+            let seg = self.bump().text.clone();
+            validate_ident(&seg, seg_tok.line, seg_tok.col)?;
+            path.push_str("::");
+            path.push_str(&seg);
+        }
+        Ok(path)
     }
 
     fn parse_import_decl(&mut self) -> Result<crate::ast::ImportDecl> {
@@ -136,46 +157,9 @@ impl<'a> Parser<'a> {
         if t0.text != "import" {
             return Err(Error::at("parse", t0.line, t0.col, "expected import"));
         }
-        let name_tok = self.peek().clone();
-        if name_tok.kind != TokenKind::Ident {
-            return Err(Error::at(
-                "parse",
-                name_tok.line,
-                name_tok.col,
-                "expected module name to import",
-            ));
-        }
-        let module = self.bump().text.clone();
-        validate_ident(&module, name_tok.line, name_tok.col)?;
-
-        let item = if self.peek().kind == TokenKind::ColonColon {
-            self.bump();
-            let item_tok = self.peek().clone();
-            if item_tok.kind != TokenKind::Ident {
-                return Err(Error::at(
-                    "parse",
-                    item_tok.line,
-                    item_tok.col,
-                    "expected name after '::' in import",
-                ));
-            }
-            let item = self.bump().text.clone();
-            validate_ident(&item, item_tok.line, item_tok.col)?;
-            Some(item)
-        } else {
-            None
-        };
+        let path = self.parse_module_path()?;
 
         let alias = if self.peek().kind == TokenKind::Ident && self.peek().text == "as" {
-            if item.is_none() {
-                let t = self.peek();
-                return Err(Error::at(
-                    "parse",
-                    t.line,
-                    t.col,
-                    "`as` requires an item import (e.g. import util::double as dbl)",
-                ));
-            }
             self.bump(); // as
             let alias_tok = self.peek().clone();
             if alias_tok.kind != TokenKind::Ident {
@@ -191,6 +175,25 @@ impl<'a> Parser<'a> {
             Some(alias)
         } else {
             None
+        };
+
+        // With `as`, last segment is the item and the prefix is the module.
+        // Without `as`, store full path as module; compile may split item later.
+        let (module, item) = if alias.is_some() {
+            let segs: Vec<&str> = path.split("::").collect();
+            if segs.len() < 2 {
+                return Err(Error::at(
+                    "parse",
+                    t0.line,
+                    t0.col,
+                    "`as` requires an item path (e.g. import util::double as dbl)",
+                ));
+            }
+            let item = segs[segs.len() - 1].to_string();
+            let module = segs[..segs.len() - 1].join("::");
+            (module, Some(item))
+        } else {
+            (path, None)
         };
 
         Ok(crate::ast::ImportDecl {
@@ -228,9 +231,41 @@ impl<'a> Parser<'a> {
             }
             _ => {}
         }
+        let mut params = Vec::new();
+        if self.peek().kind == TokenKind::LBracket {
+            self.bump();
+            loop {
+                let ptok = self.peek().clone();
+                if ptok.kind != TokenKind::Ident {
+                    return Err(Error::at(
+                        "parse",
+                        ptok.line,
+                        ptok.col,
+                        "expected type parameter name",
+                    ));
+                }
+                let p = self.bump().text.clone();
+                validate_ident(&p, ptok.line, ptok.col)?;
+                if params.contains(&p) {
+                    return Err(Error::at(
+                        "parse",
+                        ptok.line,
+                        ptok.col,
+                        format!("duplicate type parameter {p}"),
+                    ));
+                }
+                params.push(p);
+                if self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+            self.expect(TokenKind::RBracket)?;
+        }
         self.expect(TokenKind::Eq)?;
-        let ty = self.parse_type()?;
-        Ok(RawTypeAlias { name, ty })
+        let ty = self.parse_type_with_params(&params)?;
+        Ok(RawTypeAlias { name, params, ty })
     }
 
     fn parse_item(&mut self) -> Result<RawBucket> {
@@ -241,7 +276,11 @@ impl<'a> Parser<'a> {
             match self.peek().kind {
                 TokenKind::AtTest => {
                     self.bump();
-                    tests.push(self.parse_test_ann()?);
+                    tests.push(self.parse_test_ann(false)?);
+                }
+                TokenKind::AtTestError => {
+                    self.bump();
+                    tests.push(self.parse_test_ann(true)?);
                 }
                 TokenKind::AtEntry => {
                     self.bump();
@@ -266,14 +305,19 @@ impl<'a> Parser<'a> {
         Ok(bucket)
     }
 
-    fn parse_test_ann(&mut self) -> Result<TestAnn> {
+    fn parse_test_ann(&mut self, expect_error: bool) -> Result<TestAnn> {
         let (call_target, args) = self.parse_call_head()?;
-        self.expect(TokenKind::EqEq)?;
-        let expected = self.parse_expr()?;
+        let expected = if expect_error {
+            None
+        } else {
+            self.expect(TokenKind::EqEq)?;
+            Some(self.parse_expr()?)
+        };
         Ok(TestAnn {
             call_target,
             args,
             expected,
+            expect_error,
         })
     }
 
@@ -455,7 +499,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<Type> {
-        let first = self.parse_type_atom()?;
+        self.parse_type_with_params(&[])
+    }
+
+    fn parse_type_with_params(&mut self, params: &[String]) -> Result<Type> {
+        let first = self.parse_type_atom(params)?;
         if self.peek().kind != TokenKind::Pipe {
             return Ok(first);
         }
@@ -464,7 +512,7 @@ impl<'a> Parser<'a> {
         self.push_variant_atom(&mut tags, first)?;
         while self.peek().kind == TokenKind::Pipe {
             self.bump();
-            let atom = self.parse_type_atom()?;
+            let atom = self.parse_type_atom(params)?;
             self.push_variant_atom(&mut tags, atom)?;
         }
         if tags.len() < 2 {
@@ -501,10 +549,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_type_atom(&mut self) -> Result<Type> {
+    fn parse_type_atom(&mut self, params: &[String]) -> Result<Type> {
         let t = self.peek().clone();
         match t.kind {
-            TokenKind::LBrace => self.parse_record_type(),
+            TokenKind::LBrace => self.parse_record_type(params),
             TokenKind::Ident => {
                 let name = self.bump().text.clone();
                 match name.as_str() {
@@ -513,15 +561,34 @@ impl<'a> Parser<'a> {
                     "Str" => Ok(Type::Str),
                     "List" => {
                         self.expect(TokenKind::LBracket)?;
-                        let inner = self.parse_type()?;
+                        let inner = self.parse_type_with_params(params)?;
                         self.expect(TokenKind::RBracket)?;
                         Ok(Type::List(Box::new(inner)))
                     }
                     other => {
-                        if self.peek().kind == TokenKind::LParen {
+                        if params.iter().any(|p| p == other) {
+                            return Ok(Type::Param(other.to_string()));
+                        }
+                        if self.peek().kind == TokenKind::LBracket {
+                            self.bump();
+                            let mut args = Vec::new();
+                            loop {
+                                args.push(self.parse_type_with_params(params)?);
+                                if self.peek().kind == TokenKind::Comma {
+                                    self.bump();
+                                    continue;
+                                }
+                                break;
+                            }
+                            self.expect(TokenKind::RBracket)?;
+                            Ok(Type::App {
+                                name: other.to_string(),
+                                args,
+                            })
+                        } else if self.peek().kind == TokenKind::LParen {
                             // Tag(Payload) as a one-tag variant atom for unions
                             self.bump();
-                            let payload = self.parse_type()?;
+                            let payload = self.parse_type_with_params(params)?;
                             self.expect(TokenKind::RParen)?;
                             let mut m = BTreeMap::new();
                             m.insert(other.to_string(), Some(payload));
@@ -536,7 +603,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_record_type(&mut self) -> Result<Type> {
+    fn parse_record_type(&mut self, params: &[String]) -> Result<Type> {
         let t0 = self.peek().clone();
         self.expect(TokenKind::LBrace)?;
         let mut fields = BTreeMap::new();
@@ -554,7 +621,7 @@ impl<'a> Parser<'a> {
                 let name = self.bump().text.clone();
                 validate_ident(&name, name_tok.line, name_tok.col)?;
                 self.expect(TokenKind::Colon)?;
-                let ty = self.parse_type()?;
+                let ty = self.parse_type_with_params(params)?;
                 if fields.insert(name.clone(), ty).is_some() {
                     return Err(Error::at(
                         "parse",
@@ -589,7 +656,36 @@ impl<'a> Parser<'a> {
         if self.peek().kind == TokenKind::Ident && self.peek().text == "match" {
             return self.parse_match();
         }
-        self.parse_or()
+        self.parse_pipe()
+    }
+
+    /// `a |> f` → `f(a)`; `a |> f(x)` → `f(a, x)` (thread as first arg).
+    fn parse_pipe(&mut self) -> Result<Expr> {
+        let mut left = self.parse_or()?;
+        while self.peek().kind == TokenKind::PipeGt {
+            let t = self.peek().clone();
+            self.bump();
+            let rhs = self.parse_or()?;
+            left = match rhs {
+                Expr::Call { target, mut args } => {
+                    args.insert(0, left);
+                    Expr::Call { target, args }
+                }
+                Expr::Var(name) => Expr::Call {
+                    target: name,
+                    args: vec![left],
+                },
+                _ => {
+                    return Err(Error::at(
+                        "parse",
+                        t.line,
+                        t.col,
+                        "`|>` right-hand side must be a name or call",
+                    ));
+                }
+            };
+        }
+        Ok(left)
     }
 
     fn parse_match(&mut self) -> Result<Expr> {

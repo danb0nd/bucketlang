@@ -1,0 +1,13 @@
+module app
+import std::option
+import std::option::unwrap_or as unwrap_or
+
+@test demo() == 9
+demo() -> Num "use nested std::option" {
+  unwrap_or(Some(9), 0)
+}
+
+@entry
+main() -> Num "nested package demo" {
+  std::option::unwrap_or(None, 3) |> print
+}

@@ -63,7 +63,11 @@ bkt run examples/modules/app.bkt            # import util::…
 | `type Name = …` | Type aliases |
 | `None \| Some(Num)` | Tagged variants + `match` |
 | `if` / recursion | Control + algorithms |
-| `module` / `import` | Multi-file; `#mod::b…`; `mod::name` or `import mod::name as alias` |
+| `module` / `import` | Nested packages (`std::option`); `#mod::b…`; aliases |
+| `type Option[T]` | Parametric aliases; real `None`/`Some` (no sentinel records) |
+| `\|\>` | Pipe: `x \|\> f` → `f(x)` |
+| `to_json` / `--json` | Host interop; variants as `{"tag","payload"}` |
+| `@test_error` | Assert a call fails; structural diffs on `@test` fail |
 | `**` `pow` `mod` `floor` `abs` | Math cores; more via buckets |
 
 ### Modules

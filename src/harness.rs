@@ -49,6 +49,10 @@ pub struct EditResult {
     pub tests_run: usize,
     pub tests_passed: usize,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prints: Option<Vec<String>>,
     /// Present on successful dry-run (no `--write`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -287,16 +291,39 @@ pub fn run_subject_tests(
         }
         if related {
             run += 1;
-            eval_bucket(reg, tid, &[], &mut sink)?;
-            passed += 1;
+            let result = eval_bucket(reg, tid, &[], &mut sink);
+            if b.expect_error {
+                if result.is_err() {
+                    passed += 1;
+                } else {
+                    return Err(Error::msg(format!(
+                        "test {tid} expected error but succeeded"
+                    )));
+                }
+            } else {
+                result?;
+                passed += 1;
+            }
         }
     }
     if run == 0 {
         // fall back: run all tests
         for tid in &reg.test_ids {
+            let b = reg.get(tid).unwrap();
             run += 1;
-            eval_bucket(reg, tid, &[], &mut sink)?;
-            passed += 1;
+            let result = eval_bucket(reg, tid, &[], &mut sink);
+            if b.expect_error {
+                if result.is_err() {
+                    passed += 1;
+                } else {
+                    return Err(Error::msg(format!(
+                        "test {tid} expected error but succeeded"
+                    )));
+                }
+            } else {
+                result?;
+                passed += 1;
+            }
         }
     }
     let _ = out;

@@ -45,6 +45,9 @@ enum Commands {
         stdin_arg: bool,
         #[arg(long)]
         entry: Option<String>,
+        /// Print entry return value as JSON (host interop)
+        #[arg(long)]
+        json: bool,
         /// Print entry return value as `=> N`
         #[arg(long)]
         show_result: bool,
@@ -244,6 +247,7 @@ fn real_main() -> Result<(), String> {
             arg,
             stdin_arg,
             entry,
+            json,
             show_result,
             show_tests,
             verbose,
@@ -261,9 +265,17 @@ fn real_main() -> Result<(), String> {
             // Dev: run shadow tests (stdout sink). Release: test_ids is empty.
             let mut test_sink = io::sink();
             for tid in &reg.test_ids {
-                eval_bucket(reg, tid, &[], &mut test_sink).map_err(|e| {
-                    format!("test {tid} failed: {e}")
-                })?;
+                let tb = reg.get(tid).unwrap();
+                let result = eval_bucket(reg, tid, &[], &mut test_sink);
+                if tb.expect_error {
+                    if result.is_ok() {
+                        return Err(format!(
+                            "test {tid} failed: expected error but call succeeded"
+                        ));
+                    }
+                } else {
+                    result.map_err(|e| format!("test {tid} failed: {e}"))?;
+                }
             }
             if show_tests {
                 if release {
@@ -319,7 +331,9 @@ fn real_main() -> Result<(), String> {
 
             let mut sink = io::stdout();
             let result = eval_bucket(reg, &entry_id, &args, &mut sink).map_err(|e| e.to_string())?;
-            if show_result {
+            if json {
+                println!("{}", result.to_json_string());
+            } else if show_result {
                 println!("=> {}", result.display());
             }
             Ok(())
@@ -565,6 +579,8 @@ fn real_main() -> Result<(), String> {
                         tests_run: 0,
                         tests_passed: 0,
                         error: Some(e.to_string()),
+                        diff: None,
+                        prints: None,
                         source: None,
                     };
                     println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -586,6 +602,8 @@ fn real_main() -> Result<(), String> {
                         tests_run: run,
                         tests_passed: passed,
                         error: None,
+                        diff: None,
+                        prints: None,
                         source: if write { None } else { Some(new_src) },
                     };
                     println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -598,6 +616,8 @@ fn real_main() -> Result<(), String> {
                         tests_run: 0,
                         tests_passed: 0,
                         error: Some(e.to_string()),
+                        diff: Some(e.to_string()),
+                        prints: None,
                         source: None,
                     };
                     println!("{}", serde_json::to_string_pretty(&result).unwrap());

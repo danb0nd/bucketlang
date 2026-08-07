@@ -57,6 +57,7 @@ impl Registry {
                 calls: 0,
             },
             subject: None,
+            expect_error: false,
         };
         if let Some(l) = label {
             self.label_to_id.insert(l.into(), addr.into());
@@ -153,6 +154,27 @@ impl Registry {
             "assert equal",
             vec![("a", Type::Any), ("b", Type::Any)],
             Type::Bool,
+        );
+        self.core(
+            "#c.error",
+            Some("error"),
+            "abort with a message (for @test_error / intentional failure)",
+            vec![("msg", Type::Str)],
+            Type::Any,
+        );
+        self.core(
+            "#c.to_json",
+            Some("to_json"),
+            "encode a value as a JSON string",
+            vec![("x", Type::Any)],
+            Type::Str,
+        );
+        self.core(
+            "#c.from_json",
+            Some("from_json"),
+            "decode a JSON string to a value",
+            vec![("s", Type::Str)],
+            Type::Any,
         );
 
         let list_any = Type::List(Box::new(Type::Any));

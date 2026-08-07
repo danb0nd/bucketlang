@@ -239,11 +239,21 @@ fn eval_call(
                 Ok(Value::Bool(true))
             } else {
                 Err(Error::msg(format!(
-                    "assert_eq failed: {} != {}",
+                    "assert_eq failed:\n  expected: {}\n  got:      {}\n  diff:     {}",
+                    args[1].display(),
                     args[0].display(),
-                    args[1].display()
+                    args[0].diff(&args[1])
                 )))
             }
+        }
+        "#c.error" => {
+            let msg = args[0].as_str().map_err(Error::msg)?;
+            Err(Error::msg(msg.to_string()))
+        }
+        "#c.to_json" => Ok(Value::Str(args[0].to_json_string())),
+        "#c.from_json" => {
+            let s = args[0].as_str().map_err(Error::msg)?;
+            Value::from_json_str(s).map_err(Error::msg)
         }
         "#c.list_len" => {
             let xs = args[0].as_list().map_err(Error::msg)?;

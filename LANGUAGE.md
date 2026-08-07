@@ -1,6 +1,6 @@
 # Language inventory (what we have)
 
-Snapshot of **bucketlang** as of the modules work. This is the mental map of the language + tooling.
+Snapshot of **bucketlang** after nested packages, `Option[T]`, pipes, JSON host, and LLM test feedback.
 
 ## One-sentence pitch
 
@@ -11,8 +11,8 @@ Programs are **graphs of small typed functions (“buckets”)** with stable add
 | Idea | Reality today |
 |---|---|
 | Bucket | Function-like slot: label, `"desc"`, `(args) -> Ret`, body |
-| Address | `#b…` / `#mod::b…` (user), `#t…` / `#mod::t…` (tests), `#c.*` (cores) |
-| Label | Sugar for an address (`double` → `#b…`) |
+| Address | `#b…` / `#mod::b…` / `#std::option::b…` (user), `#t…`, `#c.*` (cores) |
+| Label | Sugar → address (`util::double`, import aliases) |
 | Graph | Edges from calls; `bkt inspect --graph` |
 | Strict mode | Label + non-empty desc required (default) |
 | Complexity | Per-bucket budgets (nodes / depth / calls) |
@@ -22,75 +22,58 @@ Programs are **graphs of small typed functions (“buckets”)** with stable add
 | Type | Notes |
 |---|---|
 | `Num` `Bool` `Str` | Scalars |
-| `List[T]` | Immutable; `list_len` `list_nth` `list_append` `list_concat` `list_remove` |
+| `List[T]` | Immutable; `list_*` cores |
 | `{ x: Num, y: Num }` | Records; `p.x`; punning `{ x, y }` |
-| `None \| Some(Num)` | Tagged variants; exhaustive `match` |
-| `type Name = …` | Aliases (expand at compile) |
+| `type Option[T] = None \| Some(T)` | Parametric aliases; `Option[Num]` and `Option[Str]` coexist |
+| `type Result[T, E] = Ok(T) \| Err(E)` | Same pattern |
+| `match` | Exhaustive on variants — prefer over sentinel `{ ok, val }` records |
 
 ## Control & computation
 
-- `if cond then a else b`
-- Recursion / mutual calls (depth guard 256)
-- Locals: `name = expr` in a block; last expr is return
-- `print(x)` side-effect
-- Ops: `+ - * / **`, compares, `&& \|\| !`
-- Math cores: `pow` `mod` `floor` `abs` (rest bootstrapped as buckets)
+- `if` / `match` / recursion (depth 256)
+- `|>` pipe: `x |> f` → `f(x)`; `x |> f(y)` → `f(x, y)`
+- `print`, `error(msg)`, `to_json` / `from_json`
+- Math cores: `pow` `mod` `floor` `abs`
 
 ## Spec & tests
 
-- `@entry` — program entry for `bkt run`
-- `@test call(…) == expected` — shadow `#t…` buckets; run in **dev**, stripped in **`--release`**
+- `@entry` — `bkt run`
+- `@test call(…) == expected` — structural diffs on failure
+- `@test_error call(…)` — passes iff the call errors
+- Dev runs tests; `--release` strips them
 
-## Modules
+## Modules & packages
 
 ```text
-module util                 // prefixes addresses #util::b…
-import util                 // loads util.bkt or util/mod.bkt
-import util::double as dbl  // local alias → same address
-dbl(3)                      // or util::double(3)
+module std::option          // #std::option::b00000001
+import std::option
+import std::option::unwrap_or as unwrap_or
 ```
 
-Bare labels stay inside their module. Importers see `mod::name` and explicit aliases only — so two modules can both define `foo`.
+Resolve `a::b` → `a/b.bkt` or `a/b/mod.bkt` under importer dir, `./stdlib`, or `.`.
+Bare labels do not leak across modules.
 
-No `module` → single-file `#b…` addresses (fine for small examples).
+Stdlib lives under [`stdlib/std/…`](stdlib/std/) (`std::option`, `std::core` conventions).
 
-## Bootstrap rule
+## Host / JSON
 
-- **New ADTs** → `type` + records/variants + constructor/helper buckets  
-- **New cores** → only when userland can’t be honest (`pow`, list ops, …)
+Values map 1:1 to JSON (variants: `{"tag":"Some","payload":…}`).  
+`to_json` / `from_json` cores; `bkt run --json` prints the entry return value as JSON.
+
+## Trait-like convention (no compiler traits)
+
+In `std::core`: name helpers like `to_string_point` — **convention for LLMs**, not method dispatch.
 
 ## Tooling (`bkt`)
 
 | Command | Role |
 |---|---|
-| `check` | Parse, typecheck, budgets, require `@entry` |
-| `run` | Dev: tests then entry; stdout = `print` only |
-| `inspect` / `dump` | Tokens, AST, manifest, graph, JSON, … |
-| `context` | JSON pack for one bucket (LLM) |
-| `edit` | Replace one body, recompile, run related tests |
-
-Runtime path: **source → Registry IR → interpret**. AOT binary is planned, not built.
-
-## Examples
-
-| Path | Focus |
-|---|---|
-| `examples/combo.bkt` | Small graph + tests |
-| `examples/sum_list.bkt` | Lists + recursion |
-| `examples/records.bkt` | Records, punning, variants |
-| `examples/math.bkt` | `**` + bootstrapped helpers |
-| `examples/modules/` | `module` / `import` |
+| `check` / `run` | Typecheck; tests + entry (`--json` for host) |
+| `inspect` | Tokens, AST, graph, … |
+| `context` / `edit` | LLM iterate loop |
 
 ## Not yet
 
-- Agent driver / scratchpad loop (beyond `context`/`edit`)
-- AOT `bkt build` → binary
-- Heap/`Ptr`, row polymorphism
-- Package registry (only file-relative imports)
-- LSP / pretty errors with spans everywhere
-
-## Design verdict (honest)
-
-**Strong:** addressable buckets + graph + inline tests/descs is a coherent LLM substrate; records/variants/lists/modules are enough to build real small programs and grow a stdlib in userland.
-
-**Watch:** variant tags are globally unique in a linked program; complexity budgets can bite recursive list code; modules are intentionally simple (no re-exports, no `pub`).
+- Generic bucket signatures `foo[T](…)`
+- Compiler traits / method dispatch
+- AOT `bkt build`, heap/`Ptr`, package registry

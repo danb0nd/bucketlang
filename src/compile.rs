@@ -11,12 +11,6 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone)]
-struct CtorInfo {
-    variant_ty: Type,
-    payload: Option<Type>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildProfile {
     /// Dev / test: lower `@test` into `#t…` shadow buckets and run them.
@@ -45,8 +39,10 @@ pub struct CompileResult {
     pub registry: Registry,
     pub tokens: Vec<crate::lexer::Token>,
     pub raw_buckets: Vec<RawBucket>,
-    /// Resolved type aliases (RHS fully expanded).
+    /// Resolved monomorphic type aliases (RHS fully expanded).
     pub type_aliases: BTreeMap<String, Type>,
+    /// Parametric aliases: name -> (params, body template).
+    pub parametric_aliases: BTreeMap<String, (Vec<String>, Type)>,
     pub module: Option<String>,
     pub imports: Vec<ImportDecl>,
 }
@@ -93,22 +89,75 @@ fn compile_path(
 }
 
 fn resolve_import_path(from_file: &Path, name: &str) -> Result<PathBuf> {
-    let dir = from_file.parent().unwrap_or_else(|| Path::new("."));
-    let candidates = [
-        dir.join(format!("{name}.bkt")),
-        dir.join(name).join("mod.bkt"),
-        dir.join(name).join(format!("{name}.bkt")),
-    ];
-    for c in &candidates {
-        if c.is_file() {
-            return Ok(c.clone());
+    let segments: Vec<&str> = name.split("::").collect();
+    if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
+        return Err(Error::msg(format!("invalid module path '{name}'")));
+    }
+    let mut rel = PathBuf::new();
+    for s in &segments {
+        rel.push(s);
+    }
+
+    let importer_dir = from_file.parent().unwrap_or_else(|| Path::new("."));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut roots: Vec<PathBuf> = vec![importer_dir.to_path_buf(), cwd.join("stdlib"), cwd];
+    // Also search parent dirs for a stdlib/ folder (project root heuristics).
+    let mut walk = importer_dir.to_path_buf();
+    for _ in 0..6 {
+        let candidate = walk.join("stdlib");
+        if candidate.is_dir() {
+            roots.push(candidate);
+        }
+        if !walk.pop() {
+            break;
+        }
+    }
+
+    let mut tried = Vec::new();
+    for root in &roots {
+        let candidates = [
+            root.join(&rel).with_extension("bkt"),
+            root.join(&rel).join("mod.bkt"),
+        ];
+        for c in &candidates {
+            tried.push(c.display().to_string());
+            if c.is_file() {
+                return Ok(c.clone());
+            }
         }
     }
     Err(Error::msg(format!(
-        "cannot find module '{name}' for import (tried {}, {}, {})",
-        candidates[0].display(),
-        candidates[1].display(),
-        candidates[2].display()
+        "cannot find module '{name}' for import (tried {})",
+        tried.join(", ")
+    )))
+}
+
+/// Resolve whether an import is a whole module or module+item (filesystem disambiguation).
+fn normalize_import(from_file: &Path, imp: &ImportDecl) -> Result<(String, Option<String>, Option<String>)> {
+    if let Some(item) = &imp.item {
+        // Path already split by parser (`as` form) or prior normalize.
+        let _ = resolve_import_path(from_file, &imp.module)?;
+        return Ok((
+            imp.module.clone(),
+            Some(item.clone()),
+            imp.alias.clone(),
+        ));
+    }
+    // Try full path as module first.
+    if resolve_import_path(from_file, &imp.module).is_ok() {
+        return Ok((imp.module.clone(), None, None));
+    }
+    // Else treat last segment as item.
+    let segs: Vec<&str> = imp.module.split("::").collect();
+    if segs.len() >= 2 {
+        let item = segs[segs.len() - 1].to_string();
+        let module = segs[..segs.len() - 1].join("::");
+        let _ = resolve_import_path(from_file, &module)?;
+        return Ok((module, Some(item.clone()), Some(item)));
+    }
+    Err(Error::msg(format!(
+        "cannot find module '{}' for import",
+        imp.module
     )))
 }
 
@@ -130,14 +179,22 @@ fn compile_source(
 
     let mut prelude = Registry::with_cores();
     let mut merged_aliases = BTreeMap::new();
+    let mut merged_parametric: BTreeMap<String, (Vec<String>, Type)> = BTreeMap::new();
     let mut loaded_modules: BTreeSet<String> = BTreeSet::new();
+    let mut normalized_imports: Vec<ImportDecl> = Vec::new();
+
     for imp in &program.imports {
-        let mod_name = &imp.module;
+        let (mod_name, item, alias) = normalize_import(path.unwrap(), imp)?;
+        normalized_imports.push(ImportDecl {
+            module: mod_name.clone(),
+            item,
+            alias,
+        });
         if loaded_modules.insert(mod_name.clone()) {
-            let imp_path = resolve_import_path(path.unwrap(), mod_name)?;
+            let imp_path = resolve_import_path(path.unwrap(), &mod_name)?;
             let imported = compile_path(&imp_path, opts, stack)?;
             match &imported.module {
-                Some(m) if m == mod_name => {}
+                Some(m) if m == &mod_name => {}
                 Some(m) => {
                     return Err(Error::msg(format!(
                         "import '{mod_name}' but file declares module '{m}'"
@@ -152,17 +209,25 @@ fn compile_source(
             }
             merge_registry(&mut prelude, &imported.registry)?;
             for (k, v) in imported.type_aliases {
-                if merged_aliases.contains_key(&k) {
+                if merged_aliases.contains_key(&k) || merged_parametric.contains_key(&k) {
                     return Err(Error::msg(format!(
                         "duplicate type alias '{k}' from import '{mod_name}'"
                     )));
                 }
                 merged_aliases.insert(k, v);
             }
+            for (k, v) in imported.parametric_aliases {
+                if merged_aliases.contains_key(&k) || merged_parametric.contains_key(&k) {
+                    return Err(Error::msg(format!(
+                        "duplicate type alias '{k}' from import '{mod_name}'"
+                    )));
+                }
+                merged_parametric.insert(k, v);
+            }
         }
     }
 
-    for imp in &program.imports {
+    for imp in &normalized_imports {
         if let Some(item) = &imp.item {
             let qualified = format!("{}::{item}", imp.module);
             let Some(id) = prelude.label_to_id.get(&qualified).cloned() else {
@@ -184,19 +249,28 @@ fn compile_source(
         }
     }
 
-    let local_aliases = resolve_aliases(&program)?;
+    let (local_aliases, local_parametric) = resolve_aliases(&program)?;
     for (k, v) in local_aliases {
-        if merged_aliases.contains_key(&k) {
+        if merged_aliases.contains_key(&k) || merged_parametric.contains_key(&k) {
             return Err(Error::msg(format!(
                 "type alias '{k}' conflicts with an imported alias"
             )));
         }
         merged_aliases.insert(k, v);
     }
+    for (k, v) in local_parametric {
+        if merged_aliases.contains_key(&k) || merged_parametric.contains_key(&k) {
+            return Err(Error::msg(format!(
+                "type alias '{k}' conflicts with an imported alias"
+            )));
+        }
+        merged_parametric.insert(k, v);
+    }
 
     let registry = lower(
         &program.buckets,
         &merged_aliases,
+        &merged_parametric,
         opts,
         program.module.as_deref(),
         prelude,
@@ -207,8 +281,9 @@ fn compile_source(
         tokens,
         raw_buckets: program.buckets,
         type_aliases: merged_aliases,
+        parametric_aliases: merged_parametric,
         module: program.module,
-        imports: program.imports,
+        imports: normalized_imports,
     })
 }
 
@@ -250,35 +325,57 @@ fn merge_registry(into: &mut Registry, from: &Registry) -> Result<()> {
     Ok(())
 }
 
-fn resolve_aliases(program: &RawProgram) -> Result<BTreeMap<String, Type>> {
-    let mut raw_map: BTreeMap<String, Type> = BTreeMap::new();
+fn resolve_aliases(
+    program: &RawProgram,
+) -> Result<(BTreeMap<String, Type>, BTreeMap<String, (Vec<String>, Type)>)> {
+    let mut mono_raw: BTreeMap<String, Type> = BTreeMap::new();
+    let mut parametric: BTreeMap<String, (Vec<String>, Type)> = BTreeMap::new();
     for a in &program.aliases {
-        if raw_map.contains_key(&a.name) {
+        if mono_raw.contains_key(&a.name) || parametric.contains_key(&a.name) {
             return Err(Error::msg(format!("duplicate type alias {}", a.name)));
         }
-        raw_map.insert(a.name.clone(), a.ty.clone());
+        if a.params.is_empty() {
+            mono_raw.insert(a.name.clone(), a.ty.clone());
+        } else {
+            parametric.insert(a.name.clone(), (a.params.clone(), a.ty.clone()));
+        }
     }
     let mut resolved = BTreeMap::new();
-    for name in raw_map.keys() {
+    for name in mono_raw.keys() {
         let mut stack = BTreeSet::new();
-        let ty = expand_type(&Type::Name(name.clone()), &raw_map, &mut stack)?;
+        let ty = expand_type(
+            &Type::Name(name.clone()),
+            &mono_raw,
+            &parametric,
+            &mut stack,
+        )?;
         resolved.insert(name.clone(), ty);
     }
-    Ok(resolved)
+    // Expand nested apps inside parametric bodies against mono aliases only.
+    let mut parametric_out = BTreeMap::new();
+    for (name, (params, body)) in &parametric {
+        let mut stack = BTreeSet::new();
+        let body = expand_type(body, &mono_raw, &parametric, &mut stack)?;
+        parametric_out.insert(name.clone(), (params.clone(), body));
+    }
+    Ok((resolved, parametric_out))
 }
 
 fn expand_type(
     ty: &Type,
     aliases: &BTreeMap<String, Type>,
+    parametric: &BTreeMap<String, (Vec<String>, Type)>,
     stack: &mut BTreeSet<String>,
 ) -> Result<Type> {
     match ty {
-        Type::Num | Type::Bool | Type::Str | Type::Any => Ok(ty.clone()),
-        Type::List(inner) => Ok(Type::List(Box::new(expand_type(inner, aliases, stack)?))),
+        Type::Num | Type::Bool | Type::Str | Type::Any | Type::Param(_) => Ok(ty.clone()),
+        Type::List(inner) => Ok(Type::List(Box::new(expand_type(
+            inner, aliases, parametric, stack,
+        )?))),
         Type::Record(fields) => {
             let mut out = BTreeMap::new();
             for (k, v) in fields {
-                out.insert(k.clone(), expand_type(v, aliases, stack)?);
+                out.insert(k.clone(), expand_type(v, aliases, parametric, stack)?);
             }
             Ok(Type::Record(out))
         }
@@ -287,13 +384,40 @@ fn expand_type(
             for (tag, payload) in tags {
                 let p = match payload {
                     None => None,
-                    Some(t) => Some(expand_type(t, aliases, stack)?),
+                    Some(t) => Some(expand_type(t, aliases, parametric, stack)?),
                 };
                 out.insert(tag.clone(), p);
             }
             Ok(Type::Variant(out))
         }
+        Type::App { name, args } => {
+            let (params, body) = parametric.get(name).ok_or_else(|| {
+                Error::msg(format!("unknown parametric type {name}"))
+            })?;
+            if params.len() != args.len() {
+                return Err(Error::msg(format!(
+                    "type {name} expects {} arg(s), got {}",
+                    params.len(),
+                    args.len()
+                )));
+            }
+            let mut expanded_args = Vec::new();
+            for a in args {
+                expanded_args.push(expand_type(a, aliases, parametric, stack)?);
+            }
+            let mut subst = BTreeMap::new();
+            for (p, a) in params.iter().zip(expanded_args.iter()) {
+                subst.insert(p.clone(), a.clone());
+            }
+            let body = subst_type(body, &subst)?;
+            expand_type(&body, aliases, parametric, stack)
+        }
         Type::Name(name) => {
+            if parametric.contains_key(name) {
+                return Err(Error::msg(format!(
+                    "parametric type {name} needs arguments like {name}[T]"
+                )));
+            }
             if !stack.insert(name.clone()) {
                 return Err(Error::msg(format!(
                     "cyclic type alias involving {name}"
@@ -302,14 +426,69 @@ fn expand_type(
             let raw = aliases.get(name).ok_or_else(|| {
                 Error::msg(format!("unknown type alias {name}"))
             })?;
-            let expanded = expand_type(raw, aliases, stack)?;
+            let expanded = expand_type(raw, aliases, parametric, stack)?;
             stack.remove(name);
             Ok(expanded)
         }
     }
 }
 
-fn collect_ctors(aliases: &BTreeMap<String, Type>) -> Result<BTreeMap<String, CtorInfo>> {
+fn subst_type(ty: &Type, subst: &BTreeMap<String, Type>) -> Result<Type> {
+    match ty {
+        Type::Param(p) => subst
+            .get(p)
+            .cloned()
+            .ok_or_else(|| Error::msg(format!("unbound type parameter {p}"))),
+        Type::List(inner) => Ok(Type::List(Box::new(subst_type(inner, subst)?))),
+        Type::Record(fields) => {
+            let mut out = BTreeMap::new();
+            for (k, v) in fields {
+                out.insert(k.clone(), subst_type(v, subst)?);
+            }
+            Ok(Type::Record(out))
+        }
+        Type::Variant(tags) => {
+            let mut out = BTreeMap::new();
+            for (tag, payload) in tags {
+                let p = match payload {
+                    None => None,
+                    Some(t) => Some(subst_type(t, subst)?),
+                };
+                out.insert(tag.clone(), p);
+            }
+            Ok(Type::Variant(out))
+        }
+        Type::App { name, args } => {
+            let mut out_args = Vec::new();
+            for a in args {
+                out_args.push(subst_type(a, subst)?);
+            }
+            Ok(Type::App {
+                name: name.clone(),
+                args: out_args,
+            })
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+#[derive(Debug, Clone)]
+enum CtorInfo {
+    Mono {
+        variant_ty: Type,
+        payload: Option<Type>,
+    },
+    Poly {
+        params: Vec<String>,
+        payload_template: Option<Type>,
+        variant_template: Type,
+    },
+}
+
+fn collect_ctors(
+    aliases: &BTreeMap<String, Type>,
+    parametric: &BTreeMap<String, (Vec<String>, Type)>,
+) -> Result<BTreeMap<String, CtorInfo>> {
     let mut ctors = BTreeMap::new();
     for (alias_name, ty) in aliases {
         if let Type::Variant(tags) = ty {
@@ -321,9 +500,28 @@ fn collect_ctors(aliases: &BTreeMap<String, Type>) -> Result<BTreeMap<String, Ct
                 }
                 ctors.insert(
                     tag.clone(),
-                    CtorInfo {
+                    CtorInfo::Mono {
                         variant_ty: ty.clone(),
                         payload: payload.clone(),
+                    },
+                );
+            }
+        }
+    }
+    for (alias_name, (params, body)) in parametric {
+        if let Type::Variant(tags) = body {
+            for (tag, payload) in tags {
+                if ctors.contains_key(tag) {
+                    return Err(Error::msg(format!(
+                        "variant tag '{tag}' reused (must be unique; used by {alias_name})"
+                    )));
+                }
+                ctors.insert(
+                    tag.clone(),
+                    CtorInfo::Poly {
+                        params: params.clone(),
+                        payload_template: payload.clone(),
+                        variant_template: body.clone(),
                     },
                 );
             }
@@ -332,29 +530,34 @@ fn collect_ctors(aliases: &BTreeMap<String, Type>) -> Result<BTreeMap<String, Ct
     Ok(ctors)
 }
 
-fn expand_contract(c: &Contract, aliases: &BTreeMap<String, Type>) -> Result<Contract> {
+fn expand_contract(
+    c: &Contract,
+    aliases: &BTreeMap<String, Type>,
+    parametric: &BTreeMap<String, (Vec<String>, Type)>,
+) -> Result<Contract> {
     let mut stack = BTreeSet::new();
     let mut params = Vec::new();
     for p in &c.params {
         params.push(crate::ast::Param {
             name: p.name.clone(),
-            ty: expand_type(&p.ty, aliases, &mut stack)?,
+            ty: expand_type(&p.ty, aliases, parametric, &mut stack)?,
         });
     }
     Ok(Contract {
         params,
-        ret: expand_type(&c.ret, aliases, &mut stack)?,
+        ret: expand_type(&c.ret, aliases, parametric, &mut stack)?,
     })
 }
 
 fn lower(
     raw: &[RawBucket],
     aliases: &BTreeMap<String, Type>,
+    parametric: &BTreeMap<String, (Vec<String>, Type)>,
     opts: CompileOptions,
     module: Option<&str>,
     mut reg: Registry,
 ) -> Result<Registry> {
-    let ctors = collect_ctors(aliases)?;
+    let ctors = collect_ctors(aliases, parametric)?;
     let mut next_b: u64 = 1;
     let mut next_t: u64 = 1;
     let mut claimed: BTreeSet<String> = BTreeSet::new();
@@ -385,7 +588,7 @@ fn lower(
 
     for rb in raw {
         let mut rb = rb.clone();
-        rb.contract = expand_contract(&rb.contract, aliases)?;
+        rb.contract = expand_contract(&rb.contract, aliases, parametric)?;
         if opts.strict {
             if rb.label.is_none() {
                 return Err(Error::msg("strict mode requires a bucket label"));
@@ -463,7 +666,7 @@ fn lower(
             ))
         })?;
 
-        let mut bucket = Bucket {
+        let bucket = Bucket {
             address: addr.clone(),
             label: rb.label.clone(),
             desc: rb.desc.clone().unwrap_or_default(),
@@ -473,9 +676,8 @@ fn lower(
             content_hash: content_hash(&body),
             complexity,
             subject: None,
+            expect_error: false,
         };
-        // silence unused mut warning path
-        let _ = &mut bucket;
         reg.buckets.insert(addr.clone(), bucket);
     }
 
@@ -493,26 +695,45 @@ fn lower(
                 for a in &test.args {
                     args.push(resolve_expr(a, &reg, &known, &ctors)?);
                 }
-                let expected = resolve_expr(&test.expected, &reg, &known, &ctors)?;
-                let body = Expr::Call {
-                    target: "#c.assert_eq".into(),
-                    args: vec![
-                        Expr::Call {
-                            target: call_target,
-                            args,
-                        },
-                        expected,
-                    ],
+                let body = if test.expect_error {
+                    Expr::Call {
+                        target: call_target,
+                        args,
+                    }
+                } else {
+                    let expected = resolve_expr(
+                        test.expected.as_ref().ok_or_else(|| {
+                            Error::msg("@test requires == expected value")
+                        })?,
+                        &reg,
+                        &known,
+                        &ctors,
+                    )?;
+                    Expr::Call {
+                        target: "#c.assert_eq".into(),
+                        args: vec![
+                            Expr::Call {
+                                target: call_target,
+                                args,
+                            },
+                            expected,
+                        ],
+                    }
                 };
                 if contains_print(&body) {
                     return Err(Error::msg("print / #c.print is forbidden inside @test"));
                 }
                 let complexity = measure(&body);
                 within_budget(&complexity).map_err(Error::msg)?;
+                let desc = if test.expect_error {
+                    format!("test_error: {}", test.call_target)
+                } else {
+                    format!("test: {} == …", test.call_target)
+                };
                 let bucket = Bucket {
                     address: tid.clone(),
                     label: None,
-                    desc: format!("test: {} == …", test.call_target),
+                    desc,
                     contract: crate::ast::Contract {
                         params: vec![],
                         ret: crate::ast::Type::Bool,
@@ -522,6 +743,7 @@ fn lower(
                     content_hash: content_hash(&body),
                     complexity,
                     subject: Some(subject.clone()),
+                    expect_error: test.expect_error,
                 };
                 reg.test_ids.push(tid.clone());
                 reg.buckets.insert(tid, bucket);
@@ -533,11 +755,18 @@ fn lower(
         if b.kind == BucketKind::Core {
             continue;
         }
+        if b.expect_error {
+            continue; // body is a call that should fail at runtime
+        }
         let mut env = std::collections::HashMap::new();
         for p in &b.contract.params {
             env.insert(p.name.clone(), p.ty.clone());
         }
-        let got = infer_type(&b.body, &env, &reg, &b.address, &ctors)?;
+        let got = if b.kind == BucketKind::User {
+            check_type(&b.body, &b.contract.ret, &env, &reg, &b.address, &ctors)?
+        } else {
+            infer_type(&b.body, &env, &reg, &b.address, &ctors)?
+        };
         if b.kind == BucketKind::User {
             let ret = &b.contract.ret;
             if !ret.matches(&got) && got != crate::ast::Type::Any {
@@ -611,7 +840,15 @@ fn resolve_expr(
         Expr::Str(s) => Ok(Expr::Str(s.clone())),
         Expr::Var(p) => {
             if let Some(c) = ctors.get(p) {
-                if c.payload.is_none() {
+                let nullary = match c {
+                    CtorInfo::Mono { payload: None, .. } => true,
+                    CtorInfo::Poly {
+                        payload_template: None,
+                        ..
+                    } => true,
+                    _ => false,
+                };
+                if nullary {
                     return Ok(Expr::Variant {
                         tag: p.clone(),
                         payload: None,
@@ -673,25 +910,31 @@ fn resolve_expr(
         }),
         Expr::Call { target, args } => {
             if let Some(c) = ctors.get(target) {
-                match &c.payload {
-                    Some(_) => {
-                        if args.len() != 1 {
-                            return Err(Error::msg(format!(
-                                "variant '{target}' expects 1 payload arg, got {}",
-                                args.len()
-                            )));
-                        }
-                        return Ok(Expr::Variant {
-                            tag: target.clone(),
-                            payload: Some(Box::new(resolve_expr(&args[0], reg, known, ctors)?)),
-                        });
+                let needs_payload = match c {
+                    CtorInfo::Mono {
+                        payload: Some(_), ..
                     }
-                    None => {
+                    | CtorInfo::Poly {
+                        payload_template: Some(_),
+                        ..
+                    } => true,
+                    _ => false,
+                };
+                if needs_payload {
+                    if args.len() != 1 {
                         return Err(Error::msg(format!(
-                            "variant '{target}' takes no payload (write `{target}`, not `{target}()`)"
+                            "variant '{target}' expects 1 payload arg, got {}",
+                            args.len()
                         )));
                     }
+                    return Ok(Expr::Variant {
+                        tag: target.clone(),
+                        payload: Some(Box::new(resolve_expr(&args[0], reg, known, ctors)?)),
+                    });
                 }
+                return Err(Error::msg(format!(
+                    "variant '{target}' takes no payload (write `{target}`, not `{target}()`)"
+                )));
             }
             let resolved = resolve_name(target, reg, known)?;
             let mut out_args = Vec::new();
@@ -755,6 +998,215 @@ fn contains_print(expr: &Expr) -> bool {
     }
 }
 
+fn infer_variant(
+    tag: &str,
+    payload: &Option<Box<Expr>>,
+    env: &std::collections::HashMap<String, Type>,
+    reg: &Registry,
+    bucket_addr: &str,
+    ctors: &BTreeMap<String, CtorInfo>,
+) -> Result<Type> {
+    let info = ctors.get(tag).ok_or_else(|| {
+        Error::msg(format!("unknown variant tag '{tag}' (in {bucket_addr})"))
+    })?;
+    match info {
+        CtorInfo::Mono {
+            variant_ty,
+            payload: expected,
+        } => {
+            match (expected, payload) {
+                (None, None) => {}
+                (Some(expected), Some(p)) => {
+                    let got = infer_type(p, env, reg, bucket_addr, ctors)?;
+                    if !expected.matches(&got) {
+                        return Err(Error::msg(format!(
+                            "variant '{tag}' payload type mismatch: expected {}, got {} (in {bucket_addr})",
+                            expected.name(),
+                            got.name()
+                        )));
+                    }
+                }
+                (None, Some(_)) => {
+                    return Err(Error::msg(format!(
+                        "variant '{tag}' takes no payload (in {bucket_addr})"
+                    )));
+                }
+                (Some(_), None) => {
+                    return Err(Error::msg(format!(
+                        "variant '{tag}' needs a payload (in {bucket_addr})"
+                    )));
+                }
+            }
+            Ok(variant_ty.clone())
+        }
+        CtorInfo::Poly {
+            params,
+            payload_template,
+            variant_template,
+        } => {
+            match (payload_template, payload) {
+                (None, None) => Err(Error::msg(format!(
+                    "cannot infer type parameters for '{tag}' without expected type (in {bucket_addr})"
+                ))),
+                (Some(tmpl), Some(p)) => {
+                    let got = infer_type(p, env, reg, bucket_addr, ctors)?;
+                    // Simple: if template is a single Param, subst that.
+                    let mut subst = BTreeMap::new();
+                    if let Type::Param(name) = tmpl {
+                        if params.contains(name) {
+                            subst.insert(name.clone(), got);
+                        } else {
+                            return Err(Error::msg(format!(
+                                "internal: payload template param {name} not in alias params"
+                            )));
+                        }
+                    } else if !tmpl.matches(&got) {
+                        // Non-param template (shouldn't happen often)
+                        return Err(Error::msg(format!(
+                            "variant '{tag}' payload type mismatch: expected {}, got {} (in {bucket_addr})",
+                            tmpl.name(),
+                            got.name()
+                        )));
+                    }
+                    subst_type(variant_template, &subst)
+                }
+                (None, Some(_)) => Err(Error::msg(format!(
+                    "variant '{tag}' takes no payload (in {bucket_addr})"
+                ))),
+                (Some(_), None) => Err(Error::msg(format!(
+                    "variant '{tag}' needs a payload (in {bucket_addr})"
+                ))),
+            }
+        }
+    }
+}
+
+fn check_variant(
+    tag: &str,
+    payload: &Option<Box<Expr>>,
+    expected: &Type,
+    env: &std::collections::HashMap<String, Type>,
+    reg: &Registry,
+    bucket_addr: &str,
+    ctors: &BTreeMap<String, CtorInfo>,
+) -> Result<Type> {
+    let info = ctors.get(tag).ok_or_else(|| {
+        Error::msg(format!("unknown variant tag '{tag}' (in {bucket_addr})"))
+    })?;
+    match info {
+        CtorInfo::Mono { .. } => {
+            let got = infer_variant(tag, payload, env, reg, bucket_addr, ctors)?;
+            if expected.matches(&got) {
+                Ok(expected.clone())
+            } else {
+                Err(Error::msg(format!(
+                    "variant '{tag}' has type {}, expected {} (in {bucket_addr})",
+                    got.name(),
+                    expected.name()
+                )))
+            }
+        }
+        CtorInfo::Poly {
+            params: _,
+            payload_template,
+            variant_template,
+        } => {
+            let expected_tags = expected.variant_tags().ok_or_else(|| {
+                Error::msg(format!(
+                    "expected {}, got variant '{tag}' (in {bucket_addr})",
+                    expected.name()
+                ))
+            })?;
+            let exp_payload = expected_tags.get(tag).ok_or_else(|| {
+                Error::msg(format!(
+                    "tag '{tag}' not part of {} (in {bucket_addr})",
+                    expected.name()
+                ))
+            })?;
+            match (payload_template, payload, exp_payload) {
+                (None, None, None) => Ok(expected.clone()),
+                (Some(tmpl), Some(p), Some(ep)) => {
+                    let got = check_type(p, ep, env, reg, bucket_addr, ctors)?;
+                    let mut subst = BTreeMap::new();
+                    if let Type::Param(name) = tmpl {
+                        subst.insert(name.clone(), got);
+                    }
+                    let inst = if subst.is_empty() {
+                        variant_template.clone()
+                    } else {
+                        subst_type(variant_template, &subst)?
+                    };
+                    if expected.matches(&inst) || inst.matches(expected) {
+                        Ok(expected.clone())
+                    } else {
+                        Err(Error::msg(format!(
+                            "variant '{tag}' instantiated to {}, expected {} (in {bucket_addr})",
+                            inst.name(),
+                            expected.name()
+                        )))
+                    }
+                }
+                _ => Err(Error::msg(format!(
+                    "variant '{tag}' arity mismatch for {} (in {bucket_addr})",
+                    expected.name()
+                ))),
+            }
+        }
+    }
+}
+
+fn check_type(
+    expr: &Expr,
+    expected: &Type,
+    env: &std::collections::HashMap<String, Type>,
+    reg: &Registry,
+    bucket_addr: &str,
+    ctors: &BTreeMap<String, CtorInfo>,
+) -> Result<Type> {
+    match expr {
+        Expr::Variant { tag, payload } => {
+            check_variant(tag, payload, expected, env, reg, bucket_addr, ctors)
+        }
+        Expr::Call { target, args } => {
+            let callee = reg.get(target).ok_or_else(|| {
+                Error::msg(format!(
+                    "call to unknown bucket {target} from {bucket_addr}"
+                ))
+            })?;
+            if args.len() != callee.contract.params.len() {
+                return Err(Error::msg(format!(
+                    "arity mismatch calling {target} (in {bucket_addr})"
+                )));
+            }
+            for (a, p) in args.iter().zip(callee.contract.params.iter()) {
+                let _ = check_type(a, &p.ty, env, reg, bucket_addr, ctors)?;
+            }
+            let got = infer_type(expr, env, reg, bucket_addr, ctors)?;
+            if expected.matches(&got) || got.matches(expected) {
+                Ok(expected.clone())
+            } else {
+                Err(Error::msg(format!(
+                    "type mismatch: expected {}, got {} (in {bucket_addr})",
+                    expected.name(),
+                    got.name()
+                )))
+            }
+        }
+        other => {
+            let got = infer_type(other, env, reg, bucket_addr, ctors)?;
+            if expected.matches(&got) || got.matches(expected) {
+                Ok(expected.clone())
+            } else {
+                Err(Error::msg(format!(
+                    "type mismatch: expected {}, got {} (in {bucket_addr})",
+                    expected.name(),
+                    got.name()
+                )))
+            }
+        }
+    }
+}
+
 fn infer_type(
     expr: &Expr,
     env: &std::collections::HashMap<String, crate::ast::Type>,
@@ -813,35 +1265,7 @@ fn infer_type(
                 ))
             })
         }
-        Expr::Variant { tag, payload } => {
-            let info = ctors.get(tag).ok_or_else(|| {
-                Error::msg(format!("unknown variant tag '{tag}' (in {bucket_addr})"))
-            })?;
-            match (&info.payload, payload) {
-                (None, None) => {}
-                (Some(expected), Some(p)) => {
-                    let got = infer_type(p, env, reg, bucket_addr, ctors)?;
-                    if !expected.matches(&got) {
-                        return Err(Error::msg(format!(
-                            "variant '{tag}' payload type mismatch: expected {}, got {} (in {bucket_addr})",
-                            expected.name(),
-                            got.name()
-                        )));
-                    }
-                }
-                (None, Some(_)) => {
-                    return Err(Error::msg(format!(
-                        "variant '{tag}' takes no payload (in {bucket_addr})"
-                    )));
-                }
-                (Some(_), None) => {
-                    return Err(Error::msg(format!(
-                        "variant '{tag}' needs a payload (in {bucket_addr})"
-                    )));
-                }
-            }
-            Ok(info.variant_ty.clone())
-        }
+        Expr::Variant { tag, payload } => infer_variant(tag, payload, env, reg, bucket_addr, ctors),
         Expr::Match { scrutinee, arms } => {
             let st = infer_type(scrutinee, env, reg, bucket_addr, ctors)?;
             let tags = st.variant_tags().ok_or_else(|| {
@@ -953,8 +1377,13 @@ fn infer_type(
                 )));
             }
             let mut arg_tys = Vec::new();
-            for a in args {
-                arg_tys.push(infer_type(a, env, reg, bucket_addr, ctors)?);
+            for (a, p) in args.iter().zip(callee.contract.params.iter()) {
+                // Prefer inferred type when it already matches (keeps List[Point] vs List[Any]).
+                // Fall back to check() so nullary poly ctors like None get an expected type.
+                match infer_type(a, env, reg, bucket_addr, ctors) {
+                    Ok(inf) if p.ty.matches(&inf) => arg_tys.push(inf),
+                    _ => arg_tys.push(check_type(a, &p.ty, env, reg, bucket_addr, ctors)?),
+                }
             }
 
             match target.as_str() {
@@ -974,7 +1403,13 @@ fn infer_type(
                         )))
                     }
                 }
-                "#c.print" => Ok(arg_tys[0].clone()),
+                "#c.print" | "#c.to_json" => Ok(if *target == "#c.to_json" {
+                    Type::Str
+                } else {
+                    arg_tys[0].clone()
+                }),
+                "#c.from_json" => Ok(Type::Any),
+                "#c.error" => Ok(Type::Any),
                 "#c.list_len" => {
                     if arg_tys[0].list_elem().is_none() && arg_tys[0] != Type::Any {
                         return Err(Error::msg(format!(

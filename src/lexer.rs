@@ -19,6 +19,7 @@ pub enum TokenKind {
     Arrow,
     AtEntry,
     AtTest,
+    AtTestError,
     Plus,
     Minus,
     Star,
@@ -36,6 +37,7 @@ pub enum TokenKind {
     AmpAmp,
     Pipe,
     PipePipe,
+    PipeGt,
     Colon,
     ColonColon,
     Comma,
@@ -213,6 +215,17 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 col += 2;
                 continue;
             }
+            if i + 1 < chars.len() && chars[i + 1] == '>' {
+                tokens.push(Token {
+                    kind: TokenKind::PipeGt,
+                    text: "|>".into(),
+                    line: start_line,
+                    col: start_col,
+                });
+                i += 2;
+                col += 2;
+                continue;
+            }
             tokens.push(Token {
                 kind: TokenKind::Pipe,
                 text: "|".into(),
@@ -232,6 +245,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
             let kind = match word.as_str() {
                 "entry" => TokenKind::AtEntry,
                 "test" => TokenKind::AtTest,
+                "test_error" => TokenKind::AtTestError,
                 _ => {
                     return Err(Error::at(
                         "lex",

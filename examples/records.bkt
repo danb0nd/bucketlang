@@ -1,7 +1,8 @@
-// Records (with field punning) + tagged variants (real Option, no sentinels).
+// Records (field punning) + parametric Option[T] (no sentinel records).
 
 type Point = { x: Num, y: Num }
-type OptNum = None | Some(Num)
+type Option[T] = None | Some(T)
+type Result[T, E] = Ok(T) | Err(E)
 
 @test point(2, 3) == { x: 2, y: 3 }
 point(x: Num, y: Num) -> Point "construct a point" {
@@ -15,15 +16,29 @@ mag2(p: Point) -> Num "squared magnitude" {
 
 @test unwrap_or(None, 7) == 7
 @test unwrap_or(Some(9), 7) == 9
-unwrap_or(o: OptNum, d: Num) -> Num "default if None" {
+unwrap_or(o: Option[Num], d: Num) -> Num "default if None" {
   match o {
     None => d,
     Some(v) => v
   }
 }
 
+@test greet_or(None, "yo") == "yo"
+@test greet_or(Some("hi"), "yo") == "hi"
+greet_or(o: Option[Str], d: Str) -> Str "Str option" {
+  match o {
+    None => d,
+    Some(v) => v
+  }
+}
+
+@test_error boom()
+boom() -> Num "intentional failure" {
+  error("boom")
+}
+
 @entry
-main() -> Num "demo records + variants" {
-  print(mag2(point(3, 4)))
+main() -> Num "demo records + Option + pipe" {
+  point(3, 4) |> mag2 |> print
   unwrap_or(Some(1), 0)
 }

@@ -1,0 +1,12 @@
+module std::core
+
+// Convention-only "traits" (no compiler method dispatch).
+// Printable T → define to_string_<type>(x: T) -> Str and import it explicitly.
+
+type Point = { x: Num, y: Num }
+
+@test origin_x() == 0
+point(x: Num, y: Num) -> Point "construct" { { x, y } }
+origin_x() -> Num "demo bucket for std::core" {
+  point(0, 0).x
+}

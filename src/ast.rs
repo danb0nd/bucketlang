@@ -13,6 +13,10 @@ pub enum Type {
     Variant(BTreeMap<String, Option<Type>>),
     /// User type alias (resolved away during compile).
     Name(String),
+    /// Type parameter inside a parametric alias RHS (`T` in `Option[T]`).
+    Param(String),
+    /// Application of a parametric alias: `Option[Num]`.
+    App { name: String, args: Vec<Type> },
     /// Core-only (e.g. print accepts any)
     Any,
 }
@@ -42,6 +46,11 @@ impl Type {
                 inner.join(" | ")
             }
             Type::Name(n) => n.clone(),
+            Type::Param(n) => n.clone(),
+            Type::App { name, args } => {
+                let inner: Vec<String> = args.iter().map(|a| a.name()).collect();
+                format!("{name}[{}]", inner.join(", "))
+            }
             Type::Any => "Any".into(),
         }
     }
@@ -66,6 +75,11 @@ impl Type {
                         _ => false,
                     })
                 })
+            }
+            (Type::App { name: n1, args: a1 }, Type::App { name: n2, args: a2 }) => {
+                n1 == n2
+                    && a1.len() == a2.len()
+                    && a1.iter().zip(a2.iter()).all(|(x, y)| x.matches(y))
             }
             (a, b) => a == b,
         }
@@ -157,12 +171,16 @@ pub enum Stmt {
 pub struct TestAnn {
     pub call_target: String,
     pub args: Vec<Expr>,
-    pub expected: Expr,
+    /// Present for `@test call == expected`. Absent for `@test_error call(...)`.
+    pub expected: Option<Expr>,
+    pub expect_error: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RawTypeAlias {
     pub name: String,
+    /// Empty = monomorphic alias. Non-empty = parametric (`type Option[T] = …`).
+    pub params: Vec<String>,
     pub ty: Type,
 }
 
@@ -221,4 +239,6 @@ pub struct Bucket {
     pub content_hash: String,
     pub complexity: Complexity,
     pub subject: Option<String>,
+    /// Test buckets from `@test_error` — pass iff body evaluation errors.
+    pub expect_error: bool,
 }

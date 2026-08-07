@@ -134,26 +134,29 @@ type Points = List[Point]
 
 Aliases expand during compile. Variant **tags must be unique** across the program. Cycles / unknown names error.
 
-### Modules + imports
+### Modules + packages
 
 ```text
-module util
-double(x: Num) -> Num "…" { x * 2 }
+module std::option
+type Option[T] = None | Some(T)
 
 module app
-import util
-import util::double as dbl
+import std::option
+import std::option::unwrap_or as unwrap_or
 @entry
-main() -> Num "…" { dbl(3) }   // or util::double(3)
+main() -> Num "…" { unwrap_or(None, 0) }
 ```
 
-- `import name` loads `name.bkt` or `name/mod.bkt` beside the importing file.
-- `import name::item as alias` binds a local label to that item (omit `as` → local name is `item`).
-- Same module file is loaded once even with several item imports.
-- Imported buckets are only reachable as `mod::name`, an explicit import alias, or `#mod::b…` — bare labels do **not** leak across modules (so two modules can both define `foo`).
-- With `module util`, user/test addresses mint as `#util::b…` / `#util::t…` (unprefixed `#b…` if no module). Same `::` as import/call paths; `#` marks the opaque slot.
-- Calls: `util::double(...)`, an import alias, or `#util::b00000001(...)`.
-- Imported `@entry` is ignored; root entry wins. Imported `@test`s still run in dev.
+- Module paths: `module a::b::c`. Addresses: `#a::b::c::b00000001`.
+- `import a::b` loads `a/b.bkt` or `a/b/mod.bkt` (search: importer dir, `./stdlib`, `.`).
+- `import a::b::item as alias` (or without `as` if `a::b` resolves as a module file + item).
+- Bare labels do **not** leak across modules.
+- Parametric aliases: `type Option[T] = None | Some(T)`; use `Option[Num]`. `None` needs an expected type (call arg / return).
+- Pipe: `x |> f` → `f(x)`; `x |> f(y)` → `f(x, y)`.
+- `@test_error call(...)` passes iff the call errors. Core `error(msg)` always fails.
+- JSON: `to_json` / `from_json`; variants encode as `{"tag","payload"}`; `bkt run --json`.
+
+Imported `@entry` is ignored; root entry wins. Imported `@test`s still run in dev.
 
 Buckets may call themselves (recursion) or each other; eval aborts past depth 256.
 
