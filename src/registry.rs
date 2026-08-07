@@ -126,6 +126,43 @@ impl Registry {
             vec![("a", Type::Any), ("b", Type::Any)],
             Type::Bool,
         );
+
+        let list_any = Type::List(Box::new(Type::Any));
+        self.core(
+            "#c.list_len",
+            Some("list_len"),
+            "length of a list",
+            vec![("xs", list_any.clone())],
+            Type::Num,
+        );
+        self.core(
+            "#c.list_nth",
+            Some("list_nth"),
+            "element at index (0-based)",
+            vec![("xs", list_any.clone()), ("i", Type::Num)],
+            Type::Any,
+        );
+        self.core(
+            "#c.list_append",
+            Some("list_append"),
+            "append element, return new list",
+            vec![("xs", list_any.clone()), ("x", Type::Any)],
+            list_any.clone(),
+        );
+        self.core(
+            "#c.list_concat",
+            Some("list_concat"),
+            "concatenate two lists",
+            vec![("a", list_any.clone()), ("b", list_any.clone())],
+            list_any.clone(),
+        );
+        self.core(
+            "#c.list_remove",
+            Some("list_remove"),
+            "remove element at index, return new list",
+            vec![("xs", list_any), ("i", Type::Num)],
+            Type::List(Box::new(Type::Any)),
+        );
     }
 
     pub fn resolve_target(&self, target: &str) -> Option<String> {

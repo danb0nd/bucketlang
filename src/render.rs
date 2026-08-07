@@ -8,6 +8,28 @@ pub fn render_raw(expr: &Expr) -> String {
         Expr::Bool(b) => b.to_string(),
         Expr::Str(s) => format!("{s:?}"),
         Expr::Var(p) => p.clone(),
+        Expr::List(elems) => {
+            let inner: Vec<String> = elems.iter().map(render_raw).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Expr::Record(fields) => {
+            let inner: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", render_raw(v)))
+                .collect();
+            format!("{{ {} }}", inner.join(", "))
+        }
+        Expr::Field { base, field } => format!("{}.{}", render_raw(base), field),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => format!(
+            "if {} then {} else {}",
+            render_raw(cond),
+            render_raw(then_branch),
+            render_raw(else_branch)
+        ),
         Expr::Call { target, args } => {
             let inner: Vec<String> = args.iter().map(render_raw).collect();
             format!("{target}({})", inner.join(", "))
@@ -32,6 +54,28 @@ pub fn render_labelled(expr: &Expr, reg: &Registry) -> String {
         Expr::Bool(b) => b.to_string(),
         Expr::Str(s) => format!("{s:?}"),
         Expr::Var(p) => p.clone(),
+        Expr::List(elems) => {
+            let inner: Vec<String> = elems.iter().map(|e| render_labelled(e, reg)).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Expr::Record(fields) => {
+            let inner: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", render_labelled(v, reg)))
+                .collect();
+            format!("{{ {} }}", inner.join(", "))
+        }
+        Expr::Field { base, field } => format!("{}.{}", render_labelled(base, reg), field),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => format!(
+            "if {} then {} else {}",
+            render_labelled(cond, reg),
+            render_labelled(then_branch, reg),
+            render_labelled(else_branch, reg)
+        ),
         Expr::Call { target, args } => {
             let name = reg
                 .get(target)

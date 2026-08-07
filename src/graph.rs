@@ -63,6 +63,26 @@ fn collect_calls(expr: &Expr, out: &mut BTreeSet<String>) {
             }
             collect_calls(result, out);
         }
+        Expr::List(elems) => {
+            for e in elems {
+                collect_calls(e, out);
+            }
+        }
+        Expr::Record(fields) => {
+            for (_, v) in fields {
+                collect_calls(v, out);
+            }
+        }
+        Expr::Field { base, .. } => collect_calls(base, out),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_calls(cond, out);
+            collect_calls(then_branch, out);
+            collect_calls(else_branch, out);
+        }
         Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) => {}
     }
 }

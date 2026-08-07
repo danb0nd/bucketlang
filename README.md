@@ -145,7 +145,44 @@ combo(x: Num) -> Num "add one, then double" {
 }
 ```
 
-Each `@test` becomes a shadow `#t…` bucket. `bkt run` / `bkt check` execute them; failures abort the run. Expected values can be `Num`, `Bool`, or `Str`.
+Each `@test` becomes a shadow `#t…` bucket in **dev** mode (the default). `bkt run` / `bkt check` execute them; failures abort the run. Expected values can be `Num`, `Bool`, or `Str`.
+
+Use **`--release`** to strip tests from the compiled program (no `#t…` buckets, entry only) — for a “final” build. Explicit `--dev` is the same as the default.
+
+### Lists, `if`, recursion
+
+```text
+@test sum([1, 2, 3]) == 6
+sum(xs: List[Num]) -> Num "sum all numbers" {
+  if list_len(xs) == 0 then 0
+  else list_nth(xs, 0) + sum(list_remove(xs, 0))
+}
+```
+
+Cores: `list_len`, `list_nth`, `list_append`, `list_concat`, `list_remove`. See [`examples/sum_list.bkt`](examples/sum_list.bkt).
+
+### Records (bootstrap new structures)
+
+Define shapes in contracts; construct with literals; access with `.field`. Constructor buckets are how the LLM grows the “stdlib” without new cores:
+
+```text
+point(x: Num, y: Num) -> { x: Num, y: Num } "construct a point" {
+  { x: x, y: y }
+}
+mag2(p: { x: Num, y: Num }) -> Num "squared magnitude" {
+  p.x * p.x + p.y * p.y
+}
+```
+
+See [`examples/records.bkt`](examples/records.bkt) (includes an optional-Num encoding via `{ ok, val }`).
+
+### LLM iterate loop
+
+```bash
+bkt context examples/sum_list.bkt --bucket sum
+bkt edit examples/sum_list.bkt --bucket sum --body 'if list_len(xs) == 0 then 0 else list_nth(xs, 0) + sum(list_remove(xs, 0))'
+# add --write to persist after tests pass
+```
 
 ### Addresses vs labels
 
@@ -170,13 +207,16 @@ Pin a slot yourself:
 ```bash
 # validate (parse, types, contracts, complexity, @entry)
 bkt check path/to/file.bkt
+bkt check path/to/file.bkt --dev        # include @tests (default)
+bkt check path/to/file.bkt --release    # strip @tests from the program
 
-# run (@tests then @entry). stdout = print only
+# run — default is dev: @tests then @entry. stdout = print only
 bkt run path/to/file.bkt
 bkt run path/to/file.bkt --arg 5
 bkt run path/to/file.bkt --arg hello          # Str entry
 bkt run path/to/file.bkt --arg true           # Bool entry
 echo 5 | bkt run path/to/file.bkt --stdin-arg
+bkt run path/to/file.bkt --arg 5 --release    # entry only, no tests
 
 # show extra run info
 bkt run file.bkt --arg 5 -v                   # tests + => result
@@ -184,7 +224,8 @@ bkt run file.bkt --arg 5 --show-result
 bkt run file.bkt --arg 5 --show-tests
 
 # inspect layers (great for learning / debugging)
-bkt inspect file.bkt                          # everything
+bkt inspect file.bkt                          # everything (dev)
+bkt inspect file.bkt --release --manifest     # no #t… in dump
 bkt inspect file.bkt --manifest --graph
 bkt inspect file.bkt --ast --labelled
 bkt inspect file.bkt --bucket combo --ast
@@ -207,6 +248,8 @@ Scratch without descriptions: `bkt check file.bkt --non-strict` (alias `--anon`)
 | [`examples/locals.bkt`](examples/locals.bkt) | Multiple prints from one entry |
 | [`examples/types.bkt`](examples/types.bkt) | `Str` / `Bool`, string concat, typed `--arg` |
 | [`examples/dans_first_bkt.bkt`](examples/dans_first_bkt.bkt) | Minimal `@test` + `@entry` |
+| [`examples/sum_list.bkt`](examples/sum_list.bkt) | `List[Num]`, `if`, recursion, `@test`s |
+| [`examples/records.bkt`](examples/records.bkt) | Records, ctors, optional encoding |
 
 Try:
 

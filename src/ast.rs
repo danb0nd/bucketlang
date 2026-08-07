@@ -1,26 +1,64 @@
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Type {
     Num,
     Bool,
     Str,
+    List(Box<Type>),
+    /// Named fields; order canonicalized by field name.
+    Record(BTreeMap<String, Type>),
     /// Core-only (e.g. print accepts any)
     Any,
 }
 
 impl Type {
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
-            Type::Num => "Num",
-            Type::Bool => "Bool",
-            Type::Str => "Str",
-            Type::Any => "Any",
+            Type::Num => "Num".into(),
+            Type::Bool => "Bool".into(),
+            Type::Str => "Str".into(),
+            Type::List(inner) => format!("List[{}]", inner.name()),
+            Type::Record(fields) => {
+                let inner: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}", v.name()))
+                    .collect();
+                format!("{{ {} }}", inner.join(", "))
+            }
+            Type::Any => "Any".into(),
         }
     }
 
     pub fn matches(&self, got: &Type) -> bool {
-        matches!(self, Type::Any) || self == got
+        match (self, got) {
+            (Type::Any, _) | (_, Type::Any) => true,
+            (Type::List(a), Type::List(b)) => a.matches(b),
+            (Type::Record(a), Type::Record(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                a.iter().all(|(k, at)| {
+                    b.get(k).is_some_and(|bt| at.matches(bt))
+                })
+            }
+            (a, b) => a == b,
+        }
+    }
+
+    pub fn list_elem(&self) -> Option<&Type> {
+        match self {
+            Type::List(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn record_fields(&self) -> Option<&BTreeMap<String, Type>> {
+        match self {
+            Type::Record(f) => Some(f),
+            _ => None,
+        }
     }
 }
 
@@ -42,7 +80,21 @@ pub enum Expr {
     Bool(bool),
     Str(String),
     Var(String),
-    Call { target: String, args: Vec<Expr> },
+    List(Vec<Expr>),
+    Record(Vec<(String, Expr)>),
+    Field {
+        base: Box<Expr>,
+        field: String,
+    },
+    If {
+        cond: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+    },
+    Call {
+        target: String,
+        args: Vec<Expr>,
+    },
     Block {
         stmts: Vec<Stmt>,
         result: Box<Expr>,
@@ -100,5 +152,3 @@ pub struct Bucket {
     pub complexity: Complexity,
     pub subject: Option<String>,
 }
-
-// (types live here; values in crate::value)

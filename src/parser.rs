@@ -1,6 +1,7 @@
 use crate::ast::*;
 use crate::error::{Error, Result};
 use crate::lexer::{Token, TokenKind};
+use std::collections::BTreeMap;
 
 pub struct Parser<'a> {
     tokens: &'a [Token],
@@ -248,25 +249,121 @@ impl<'a> Parser<'a> {
 
     fn parse_type(&mut self) -> Result<Type> {
         let t = self.peek().clone();
-        if t.kind != TokenKind::Ident {
-            return Err(Error::at("parse", t.line, t.col, "expected type name"));
-        }
-        let name = self.bump().text.clone();
-        match name.as_str() {
-            "Num" => Ok(Type::Num),
-            "Bool" => Ok(Type::Bool),
-            "Str" => Ok(Type::Str),
-            other => Err(Error::at(
-                "parse",
-                t.line,
-                t.col,
-                format!("unknown type {other} (want Num, Bool, or Str)"),
-            )),
+        match t.kind {
+            TokenKind::LBrace => self.parse_record_type(),
+            TokenKind::Ident => {
+                let name = self.bump().text.clone();
+                match name.as_str() {
+                    "Num" => Ok(Type::Num),
+                    "Bool" => Ok(Type::Bool),
+                    "Str" => Ok(Type::Str),
+                    "List" => {
+                        self.expect(TokenKind::LBracket)?;
+                        let inner = self.parse_type()?;
+                        self.expect(TokenKind::RBracket)?;
+                        Ok(Type::List(Box::new(inner)))
+                    }
+                    other => Err(Error::at(
+                        "parse",
+                        t.line,
+                        t.col,
+                        format!(
+                            "unknown type {other} (want Num, Bool, Str, List[…], or {{ … }})"
+                        ),
+                    )),
+                }
+            }
+            _ => Err(Error::at("parse", t.line, t.col, "expected type")),
         }
     }
 
+    fn parse_record_type(&mut self) -> Result<Type> {
+        let t0 = self.peek().clone();
+        self.expect(TokenKind::LBrace)?;
+        let mut fields = BTreeMap::new();
+        if self.peek().kind != TokenKind::RBrace {
+            loop {
+                let name_tok = self.peek().clone();
+                if name_tok.kind != TokenKind::Ident {
+                    return Err(Error::at(
+                        "parse",
+                        name_tok.line,
+                        name_tok.col,
+                        "expected field name in record type",
+                    ));
+                }
+                let name = self.bump().text.clone();
+                validate_ident(&name, name_tok.line, name_tok.col)?;
+                self.expect(TokenKind::Colon)?;
+                let ty = self.parse_type()?;
+                if fields.insert(name.clone(), ty).is_some() {
+                    return Err(Error::at(
+                        "parse",
+                        name_tok.line,
+                        name_tok.col,
+                        format!("duplicate record field {name}"),
+                    ));
+                }
+                if self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        if fields.is_empty() {
+            return Err(Error::at(
+                "parse",
+                t0.line,
+                t0.col,
+                "record type needs at least one field",
+            ));
+        }
+        Ok(Type::Record(fields))
+    }
+
     fn parse_expr(&mut self) -> Result<Expr> {
+        if self.peek().kind == TokenKind::Ident && self.peek().text == "if" {
+            return self.parse_if();
+        }
         self.parse_or()
+    }
+
+    fn parse_if(&mut self) -> Result<Expr> {
+        let t = self.peek().clone();
+        self.expect(TokenKind::Ident)?; // if
+        if t.text != "if" {
+            return Err(Error::at("parse", t.line, t.col, "expected if"));
+        }
+        let cond = self.parse_or()?;
+        let then_tok = self.peek().clone();
+        if then_tok.kind != TokenKind::Ident || then_tok.text != "then" {
+            return Err(Error::at(
+                "parse",
+                then_tok.line,
+                then_tok.col,
+                "expected then after if condition",
+            ));
+        }
+        self.bump();
+        let then_branch = self.parse_expr()?;
+        let else_tok = self.peek().clone();
+        if else_tok.kind != TokenKind::Ident || else_tok.text != "else" {
+            return Err(Error::at(
+                "parse",
+                else_tok.line,
+                else_tok.col,
+                "expected else after then branch",
+            ));
+        }
+        self.bump();
+        let else_branch = self.parse_expr()?;
+        Ok(Expr::If {
+            cond: Box::new(cond),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        })
     }
 
     fn parse_or(&mut self) -> Result<Expr> {
@@ -388,8 +485,31 @@ impl<'a> Parser<'a> {
                     args: vec![Expr::Num(0.0), inner],
                 })
             }
-            _ => self.parse_factor(),
+            _ => self.parse_postfix(),
         }
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_factor()?;
+        while self.peek().kind == TokenKind::Dot {
+            self.bump();
+            let ft = self.peek().clone();
+            if ft.kind != TokenKind::Ident {
+                return Err(Error::at(
+                    "parse",
+                    ft.line,
+                    ft.col,
+                    "expected field name after '.'",
+                ));
+            }
+            let field = self.bump().text.clone();
+            validate_ident(&field, ft.line, ft.col)?;
+            expr = Expr::Field {
+                base: Box::new(expr),
+                field,
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_factor(&mut self) -> Result<Expr> {
@@ -400,6 +520,8 @@ impl<'a> Parser<'a> {
                 let s = self.bump().text.clone();
                 Ok(Expr::Str(s))
             }
+            TokenKind::LBracket => self.parse_list_lit(),
+            TokenKind::LBrace => self.parse_record_lit(),
             TokenKind::Ident | TokenKind::Address => {
                 let target = self.bump().text.clone();
                 if target == "true" {
@@ -407,6 +529,14 @@ impl<'a> Parser<'a> {
                 }
                 if target == "false" {
                     return Ok(Expr::Bool(false));
+                }
+                if target == "if" || target == "then" || target == "else" {
+                    return Err(Error::at(
+                        "parse",
+                        t.line,
+                        t.col,
+                        format!("unexpected keyword {target} in expression"),
+                    ));
                 }
                 if self.peek().kind == TokenKind::LParen {
                     self.bump();
@@ -437,6 +567,71 @@ impl<'a> Parser<'a> {
                 format!("unexpected token in expression: {:?}", t.kind),
             )),
         }
+    }
+
+    fn parse_list_lit(&mut self) -> Result<Expr> {
+        self.expect(TokenKind::LBracket)?;
+        let mut elems = Vec::new();
+        if self.peek().kind != TokenKind::RBracket {
+            loop {
+                elems.push(self.parse_expr()?);
+                if self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RBracket)?;
+        Ok(Expr::List(elems))
+    }
+
+    fn parse_record_lit(&mut self) -> Result<Expr> {
+        let t0 = self.peek().clone();
+        self.expect(TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        let mut seen = BTreeMap::new();
+        if self.peek().kind != TokenKind::RBrace {
+            loop {
+                let name_tok = self.peek().clone();
+                if name_tok.kind != TokenKind::Ident {
+                    return Err(Error::at(
+                        "parse",
+                        name_tok.line,
+                        name_tok.col,
+                        "expected field name in record",
+                    ));
+                }
+                let name = self.bump().text.clone();
+                validate_ident(&name, name_tok.line, name_tok.col)?;
+                self.expect(TokenKind::Colon)?;
+                let value = self.parse_expr()?;
+                if seen.insert(name.clone(), ()).is_some() {
+                    return Err(Error::at(
+                        "parse",
+                        name_tok.line,
+                        name_tok.col,
+                        format!("duplicate record field {name}"),
+                    ));
+                }
+                fields.push((name, value));
+                if self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        if fields.is_empty() {
+            return Err(Error::at(
+                "parse",
+                t0.line,
+                t0.col,
+                "record literal needs at least one field",
+            ));
+        }
+        Ok(Expr::Record(fields))
     }
 
     fn parse_args(&mut self) -> Result<Vec<Expr>> {
@@ -494,12 +689,14 @@ pub fn validate_ident(name: &str, line: usize, col: usize) -> Result<()> {
         ));
     }
     match name {
-        "Num" | "Bool" | "Str" | "print" | "true" | "false" => Err(Error::at(
-            "lex",
-            line,
-            col,
-            format!("reserved identifier: {name}"),
-        )),
+        "Num" | "Bool" | "Str" | "List" | "print" | "true" | "false" | "if" | "then" | "else" => {
+            Err(Error::at(
+                "lex",
+                line,
+                col,
+                format!("reserved identifier: {name}"),
+            ))
+        }
         _ => Ok(()),
     }
 }

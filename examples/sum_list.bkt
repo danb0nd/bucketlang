@@ -1,0 +1,14 @@
+// Recursive list sum — MVP "real problem" shape for the LLM loop.
+
+@test sum([]) == 0
+@test sum([1, 2, 3]) == 6
+@test sum([10]) == 10
+sum(xs: List[Num]) -> Num "sum all numbers in a list" {
+  if list_len(xs) == 0 then 0
+  else list_nth(xs, 0) + sum(list_remove(xs, 0))
+}
+
+@entry
+main() -> Num "print sum of 1..4" {
+  print(sum([1, 2, 3, 4]))
+}

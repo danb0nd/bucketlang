@@ -39,6 +39,9 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
+    Dot,
     Eof,
 }
 
@@ -342,6 +345,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
             '}' => TokenKind::RBrace,
+            '[' => TokenKind::LBracket,
+            ']' => TokenKind::RBracket,
+            '.' => TokenKind::Dot,
             _ => {
                 return Err(Error::at(
                     "lex",

@@ -71,6 +71,26 @@ fn lint_unused_locals(expr: &Expr, label: &str, addr: &str, out: &mut Vec<Warnin
                 lint_unused_locals(a, label, addr, out);
             }
         }
+        Expr::List(elems) => {
+            for e in elems {
+                lint_unused_locals(e, label, addr, out);
+            }
+        }
+        Expr::Record(fields) => {
+            for (_, v) in fields {
+                lint_unused_locals(v, label, addr, out);
+            }
+        }
+        Expr::Field { base, .. } => lint_unused_locals(base, label, addr, out),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            lint_unused_locals(cond, label, addr, out);
+            lint_unused_locals(then_branch, label, addr, out);
+            lint_unused_locals(else_branch, label, addr, out);
+        }
         Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) => {}
     }
 }
@@ -94,6 +114,26 @@ fn collect_vars(expr: &Expr, set: &mut BTreeSet<String>) {
             set.insert(name.clone());
         }
         Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => {}
+        Expr::List(elems) => {
+            for e in elems {
+                collect_vars(e, set);
+            }
+        }
+        Expr::Record(fields) => {
+            for (_, v) in fields {
+                collect_vars(v, set);
+            }
+        }
+        Expr::Field { base, .. } => collect_vars(base, set),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_vars(cond, set);
+            collect_vars(then_branch, set);
+            collect_vars(else_branch, set);
+        }
         Expr::Call { args, .. } => {
             for a in args {
                 collect_vars(a, set);

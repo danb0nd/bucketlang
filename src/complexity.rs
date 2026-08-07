@@ -2,7 +2,7 @@ use crate::ast::{Complexity, Expr, Stmt};
 
 pub const MAX_NODES: usize = 32;
 pub const MAX_DEPTH: usize = 10;
-pub const MAX_CALLS: usize = 8;
+pub const MAX_CALLS: usize = 12;
 
 pub fn measure(expr: &Expr) -> Complexity {
     fn walk(e: &Expr, depth: usize) -> Complexity {
@@ -12,6 +12,66 @@ pub fn measure(expr: &Expr) -> Complexity {
                 depth,
                 calls: 0,
             },
+            Expr::List(elems) => {
+                let mut nodes = 1;
+                let mut calls = 0;
+                let mut max_d = depth;
+                for a in elems {
+                    let c = walk(a, depth + 1);
+                    nodes += c.nodes;
+                    calls += c.calls;
+                    max_d = max_d.max(c.depth);
+                }
+                Complexity {
+                    nodes,
+                    depth: max_d,
+                    calls,
+                }
+            }
+            Expr::Record(fields) => {
+                let mut nodes = 1;
+                let mut calls = 0;
+                let mut max_d = depth;
+                for (_, v) in fields {
+                    let c = walk(v, depth + 1);
+                    nodes += c.nodes;
+                    calls += c.calls;
+                    max_d = max_d.max(c.depth);
+                }
+                Complexity {
+                    nodes,
+                    depth: max_d,
+                    calls,
+                }
+            }
+            Expr::Field { base, .. } => {
+                let c = walk(base, depth + 1);
+                Complexity {
+                    nodes: c.nodes + 1,
+                    depth: c.depth,
+                    calls: c.calls,
+                }
+            }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let mut nodes = 1;
+                let mut calls = 0;
+                let mut max_d = depth;
+                for part in [cond.as_ref(), then_branch.as_ref(), else_branch.as_ref()] {
+                    let c = walk(part, depth + 1);
+                    nodes += c.nodes;
+                    calls += c.calls;
+                    max_d = max_d.max(c.depth);
+                }
+                Complexity {
+                    nodes,
+                    depth: max_d,
+                    calls,
+                }
+            }
             Expr::Call { args, .. } => {
                 let mut nodes = 1;
                 let mut calls = 1;

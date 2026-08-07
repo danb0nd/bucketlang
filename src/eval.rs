@@ -2,8 +2,10 @@ use crate::ast::{Expr, Stmt};
 use crate::error::{Error, Result};
 use crate::registry::Registry;
 use crate::value::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
+
+const MAX_CALL_DEPTH: usize = 256;
 
 pub fn eval_bucket(
     reg: &Registry,
@@ -11,6 +13,21 @@ pub fn eval_bucket(
     args: &[Value],
     out: &mut dyn Write,
 ) -> Result<Value> {
+    eval_bucket_depth(reg, addr, args, out, 0)
+}
+
+fn eval_bucket_depth(
+    reg: &Registry,
+    addr: &str,
+    args: &[Value],
+    out: &mut dyn Write,
+    depth: usize,
+) -> Result<Value> {
+    if depth > MAX_CALL_DEPTH {
+        return Err(Error::msg(format!(
+            "call depth exceeded {MAX_CALL_DEPTH} (possible infinite recursion) at {addr}"
+        )));
+    }
     let bucket = reg
         .get(addr)
         .ok_or_else(|| Error::msg(format!("unknown bucket {addr}")))?;
@@ -34,7 +51,7 @@ pub fn eval_bucket(
         }
         env.insert(p.name.clone(), v.clone());
     }
-    eval_expr(&bucket.body, &mut env, reg, out, addr)
+    eval_expr(&bucket.body, &mut env, reg, out, addr, depth)
 }
 
 fn eval_expr(
@@ -43,6 +60,7 @@ fn eval_expr(
     reg: &Registry,
     out: &mut dyn Write,
     from: &str,
+    depth: usize,
 ) -> Result<Value> {
     match expr {
         Expr::Num(n) => Ok(Value::Num(*n)),
@@ -52,31 +70,70 @@ fn eval_expr(
             .get(name)
             .cloned()
             .ok_or_else(|| Error::msg(format!("unbound name '{name}' in {from}"))),
+        Expr::List(elems) => {
+            let mut vals = Vec::new();
+            for e in elems {
+                vals.push(eval_expr(e, env, reg, out, from, depth)?);
+            }
+            Ok(Value::List(vals))
+        }
+        Expr::Record(fields) => {
+            let mut map = BTreeMap::new();
+            for (k, v) in fields {
+                map.insert(k.clone(), eval_expr(v, env, reg, out, from, depth)?);
+            }
+            Ok(Value::Record(map))
+        }
+        Expr::Field { base, field } => {
+            let rec = eval_expr(base, env, reg, out, from, depth)?;
+            let map = rec.as_record().map_err(Error::msg)?;
+            map.get(field)
+                .cloned()
+                .ok_or_else(|| Error::msg(format!("missing field '{field}' in {from}")))
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let c = eval_expr(cond, env, reg, out, from, depth)?;
+            if c.as_bool().map_err(Error::msg)? {
+                eval_expr(then_branch, env, reg, out, from, depth)
+            } else {
+                eval_expr(else_branch, env, reg, out, from, depth)
+            }
+        }
         Expr::Call { target, args } => {
             let mut vals = Vec::new();
             for a in args {
-                vals.push(eval_expr(a, env, reg, out, from)?);
+                vals.push(eval_expr(a, env, reg, out, from, depth)?);
             }
-            eval_call(reg, target, &vals, out)
+            eval_call(reg, target, &vals, out, depth)
         }
         Expr::Block { stmts, result } => {
             for stmt in stmts {
                 match stmt {
                     Stmt::Bind { name, value } => {
-                        let v = eval_expr(value, env, reg, out, from)?;
+                        let v = eval_expr(value, env, reg, out, from, depth)?;
                         env.insert(name.clone(), v);
                     }
                     Stmt::Run(e) => {
-                        let _ = eval_expr(e, env, reg, out, from)?;
+                        let _ = eval_expr(e, env, reg, out, from, depth)?;
                     }
                 }
             }
-            eval_expr(result, env, reg, out, from)
+            eval_expr(result, env, reg, out, from, depth)
         }
     }
 }
 
-fn eval_call(reg: &Registry, target: &str, args: &[Value], out: &mut dyn Write) -> Result<Value> {
+fn eval_call(
+    reg: &Registry,
+    target: &str,
+    args: &[Value],
+    out: &mut dyn Write,
+    depth: usize,
+) -> Result<Value> {
     match target {
         "#c.add" => match (&args[0], &args[1]) {
             (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a + b)),
@@ -134,6 +191,52 @@ fn eval_call(reg: &Registry, target: &str, args: &[Value], out: &mut dyn Write) 
                 )))
             }
         }
+        "#c.list_len" => {
+            let xs = args[0].as_list().map_err(Error::msg)?;
+            Ok(Value::Num(xs.len() as f64))
+        }
+        "#c.list_nth" => {
+            let xs = args[0].as_list().map_err(Error::msg)?;
+            let i = args[1].as_num().map_err(Error::msg)?;
+            if i.fract() != 0.0 || i < 0.0 {
+                return Err(Error::msg(format!("list_nth index must be a non-negative integer, got {i}")));
+            }
+            let idx = i as usize;
+            xs.get(idx)
+                .cloned()
+                .ok_or_else(|| Error::msg(format!("list_nth index {idx} out of range (len {})", xs.len())))
+        }
+        "#c.list_append" => {
+            let mut xs = args[0].as_list().map_err(Error::msg)?.to_vec();
+            xs.push(args[1].clone());
+            Ok(Value::List(xs))
+        }
+        "#c.list_concat" => {
+            let a = args[0].as_list().map_err(Error::msg)?;
+            let b = args[1].as_list().map_err(Error::msg)?;
+            let mut out = a.to_vec();
+            out.extend_from_slice(b);
+            Ok(Value::List(out))
+        }
+        "#c.list_remove" => {
+            let xs = args[0].as_list().map_err(Error::msg)?;
+            let i = args[1].as_num().map_err(Error::msg)?;
+            if i.fract() != 0.0 || i < 0.0 {
+                return Err(Error::msg(format!(
+                    "list_remove index must be a non-negative integer, got {i}"
+                )));
+            }
+            let idx = i as usize;
+            if idx >= xs.len() {
+                return Err(Error::msg(format!(
+                    "list_remove index {idx} out of range (len {})",
+                    xs.len()
+                )));
+            }
+            let mut out = xs.to_vec();
+            out.remove(idx);
+            Ok(Value::List(out))
+        }
         other => {
             let bucket = reg
                 .get(other)
@@ -141,7 +244,7 @@ fn eval_call(reg: &Registry, target: &str, args: &[Value], out: &mut dyn Write) 
             if bucket.kind == crate::ast::BucketKind::Core {
                 return Err(Error::msg(format!("unimplemented core {other}")));
             }
-            eval_bucket(reg, other, args, out)
+            eval_bucket_depth(reg, other, args, out, depth + 1)
         }
     }
 }

@@ -8,14 +8,26 @@ use crate::registry::Registry;
 use serde::Serialize;
 use std::collections::BTreeSet;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildProfile {
+    /// Dev / test: lower `@test` into `#t…` shadow buckets and run them.
+    Dev,
+    /// Release / final: strip tests from the compiled program.
+    Release,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CompileOptions {
     pub strict: bool,
+    pub profile: BuildProfile,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        Self { strict: true }
+        Self {
+            strict: true,
+            profile: BuildProfile::Dev,
+        }
     }
 }
 
@@ -144,50 +156,53 @@ fn lower(raw: &[RawBucket], opts: CompileOptions) -> Result<Registry> {
         reg.buckets.insert(addr.clone(), bucket);
     }
 
-    for (addr, rb) in &allocated {
-        let subject = rb.label.clone().unwrap_or_else(|| addr.clone());
-        for test in &rb.tests {
-            let tid = format!("#t{next_t:08x}");
-            next_t += 1;
-            known.insert(tid.clone());
+    // Shadow tests only in Dev profile (Release strips @test from the program)
+    if opts.profile == BuildProfile::Dev {
+        for (addr, rb) in &allocated {
+            let subject = rb.label.clone().unwrap_or_else(|| addr.clone());
+            for test in &rb.tests {
+                let tid = format!("#t{next_t:08x}");
+                next_t += 1;
+                known.insert(tid.clone());
 
-            let call_target = resolve_name(&test.call_target, &reg, &known)?;
-            let mut args = Vec::new();
-            for a in &test.args {
-                args.push(resolve_expr(a, &reg, &known)?);
-            }
-            let expected = resolve_expr(&test.expected, &reg, &known)?;
-            let body = Expr::Call {
-                target: "#c.assert_eq".into(),
-                args: vec![
-                    Expr::Call {
-                        target: call_target,
-                        args,
+                let call_target = resolve_name(&test.call_target, &reg, &known)?;
+                let mut args = Vec::new();
+                for a in &test.args {
+                    args.push(resolve_expr(a, &reg, &known)?);
+                }
+                let expected = resolve_expr(&test.expected, &reg, &known)?;
+                let body = Expr::Call {
+                    target: "#c.assert_eq".into(),
+                    args: vec![
+                        Expr::Call {
+                            target: call_target,
+                            args,
+                        },
+                        expected,
+                    ],
+                };
+                if contains_print(&body) {
+                    return Err(Error::msg("print / #c.print is forbidden inside @test"));
+                }
+                let complexity = measure(&body);
+                within_budget(&complexity).map_err(Error::msg)?;
+                let bucket = Bucket {
+                    address: tid.clone(),
+                    label: None,
+                    desc: format!("test: {} == …", test.call_target),
+                    contract: crate::ast::Contract {
+                        params: vec![],
+                        ret: crate::ast::Type::Bool,
                     },
-                    expected,
-                ],
-            };
-            if contains_print(&body) {
-                return Err(Error::msg("print / #c.print is forbidden inside @test"));
+                    body: body.clone(),
+                    kind: BucketKind::Test,
+                    content_hash: content_hash(&body),
+                    complexity,
+                    subject: Some(subject.clone()),
+                };
+                reg.test_ids.push(tid.clone());
+                reg.buckets.insert(tid, bucket);
             }
-            let complexity = measure(&body);
-            within_budget(&complexity).map_err(Error::msg)?;
-            let bucket = Bucket {
-                address: tid.clone(),
-                label: None,
-                desc: format!("test: {} == …", test.call_target),
-                contract: crate::ast::Contract {
-                    params: vec![],
-                    ret: crate::ast::Type::Bool,
-                },
-                body: body.clone(),
-                kind: BucketKind::Test,
-                content_hash: content_hash(&body),
-                complexity,
-                subject: Some(subject.clone()),
-            };
-            reg.test_ids.push(tid.clone());
-            reg.buckets.insert(tid, bucket);
         }
     }
 
@@ -236,6 +251,33 @@ fn resolve_expr(expr: &Expr, reg: &Registry, known: &BTreeSet<String>) -> Result
         Expr::Bool(b) => Ok(Expr::Bool(*b)),
         Expr::Str(s) => Ok(Expr::Str(s.clone())),
         Expr::Var(p) => Ok(Expr::Var(p.clone())),
+        Expr::List(elems) => {
+            let mut out = Vec::new();
+            for e in elems {
+                out.push(resolve_expr(e, reg, known)?);
+            }
+            Ok(Expr::List(out))
+        }
+        Expr::Record(fields) => {
+            let mut out = Vec::new();
+            for (k, v) in fields {
+                out.push((k.clone(), resolve_expr(v, reg, known)?));
+            }
+            Ok(Expr::Record(out))
+        }
+        Expr::Field { base, field } => Ok(Expr::Field {
+            base: Box::new(resolve_expr(base, reg, known)?),
+            field: field.clone(),
+        }),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => Ok(Expr::If {
+            cond: Box::new(resolve_expr(cond, reg, known)?),
+            then_branch: Box::new(resolve_expr(then_branch, reg, known)?),
+            else_branch: Box::new(resolve_expr(else_branch, reg, known)?),
+        }),
         Expr::Call { target, args } => {
             let resolved = resolve_name(target, reg, known)?;
             let mut out_args = Vec::new();
@@ -275,6 +317,14 @@ fn contains_print(expr: &Expr) -> bool {
         Expr::Call { target, args } => {
             (target == "#c.print" || target == "print") || args.iter().any(contains_print)
         }
+        Expr::List(elems) => elems.iter().any(contains_print),
+        Expr::Record(fields) => fields.iter().any(|(_, v)| contains_print(v)),
+        Expr::Field { base, .. } => contains_print(base),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => contains_print(cond) || contains_print(then_branch) || contains_print(else_branch),
         Expr::Block { stmts, result } => {
             stmts.iter().any(|s| match s {
                 crate::ast::Stmt::Bind { value, .. } => contains_print(value),
@@ -299,6 +349,77 @@ fn infer_type(
         Expr::Var(name) => env.get(name).cloned().ok_or_else(|| {
             Error::msg(format!("unknown name '{name}' in {bucket_addr}"))
         }),
+        Expr::List(elems) => {
+            if elems.is_empty() {
+                return Ok(Type::List(Box::new(Type::Any)));
+            }
+            let mut elem_ty = infer_type(&elems[0], env, reg, bucket_addr)?;
+            for e in &elems[1..] {
+                let t = infer_type(e, env, reg, bucket_addr)?;
+                if !elem_ty.matches(&t) {
+                    return Err(Error::msg(format!(
+                        "heterogeneous list elements {} vs {} (in {bucket_addr})",
+                        elem_ty.name(),
+                        t.name()
+                    )));
+                }
+                if elem_ty == Type::Any {
+                    elem_ty = t;
+                }
+            }
+            Ok(Type::List(Box::new(elem_ty)))
+        }
+        Expr::Record(fields) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (k, v) in fields {
+                let ty = infer_type(v, env, reg, bucket_addr)?;
+                map.insert(k.clone(), ty);
+            }
+            Ok(Type::Record(map))
+        }
+        Expr::Field { base, field } => {
+            let bt = infer_type(base, env, reg, bucket_addr)?;
+            let fields = bt.record_fields().ok_or_else(|| {
+                Error::msg(format!(
+                    "field access on non-record {} (in {bucket_addr})",
+                    bt.name()
+                ))
+            })?;
+            fields.get(field).cloned().ok_or_else(|| {
+                Error::msg(format!(
+                    "unknown field '{field}' on {} (in {bucket_addr})",
+                    bt.name()
+                ))
+            })
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let ct = infer_type(cond, env, reg, bucket_addr)?;
+            if ct != Type::Bool && ct != Type::Any {
+                return Err(Error::msg(format!(
+                    "if condition must be Bool, got {} (in {bucket_addr})",
+                    ct.name()
+                )));
+            }
+            let t1 = infer_type(then_branch, env, reg, bucket_addr)?;
+            let t2 = infer_type(else_branch, env, reg, bucket_addr)?;
+            if t1.matches(&t2) || t2.matches(&t1) {
+                if t1 == Type::Any {
+                    Ok(t2)
+                } else {
+                    Ok(t1)
+                }
+            } else {
+                Err(Error::msg(format!(
+                    "if branches must match: {} vs {} (in {bucket_addr})",
+                    t1.name(),
+                    t2.name()
+                )))
+            }
+        }
         Expr::Call { target, args } => {
             let callee = reg.get(target).ok_or_else(|| {
                 Error::msg(format!(
@@ -319,7 +440,6 @@ fn infer_type(
                 arg_tys.push(infer_type(a, env, reg, bucket_addr)?);
             }
 
-            // Polymorphic cores
             match target.as_str() {
                 "#c.add" => match (&arg_tys[0], &arg_tys[1]) {
                     (Type::Num, Type::Num) => Ok(Type::Num),
@@ -329,10 +449,7 @@ fn infer_type(
                     ))),
                 },
                 "#c.eq" | "#c.ne" | "#c.assert_eq" => {
-                    if arg_tys[0] == arg_tys[1]
-                        || arg_tys[0] == Type::Any
-                        || arg_tys[1] == Type::Any
-                    {
+                    if arg_tys[0].matches(&arg_tys[1]) {
                         Ok(Type::Bool)
                     } else {
                         Err(Error::msg(format!(
@@ -341,6 +458,77 @@ fn infer_type(
                     }
                 }
                 "#c.print" => Ok(arg_tys[0].clone()),
+                "#c.list_len" => {
+                    if arg_tys[0].list_elem().is_none() && arg_tys[0] != Type::Any {
+                        return Err(Error::msg(format!(
+                            "list_len expects List, got {} (in {bucket_addr})",
+                            arg_tys[0].name()
+                        )));
+                    }
+                    Ok(Type::Num)
+                }
+                "#c.list_nth" => {
+                    let elem = arg_tys[0].list_elem().cloned().ok_or_else(|| {
+                        Error::msg(format!(
+                            "list_nth expects List, got {} (in {bucket_addr})",
+                            arg_tys[0].name()
+                        ))
+                    })?;
+                    if arg_tys[1] != Type::Num && arg_tys[1] != Type::Any {
+                        return Err(Error::msg(format!(
+                            "list_nth index must be Num (in {bucket_addr})"
+                        )));
+                    }
+                    Ok(elem)
+                }
+                "#c.list_append" => {
+                    let elem = arg_tys[0].list_elem().cloned().ok_or_else(|| {
+                        Error::msg(format!(
+                            "list_append expects List, got {} (in {bucket_addr})",
+                            arg_tys[0].name()
+                        ))
+                    })?;
+                    if !elem.matches(&arg_tys[1]) {
+                        return Err(Error::msg(format!(
+                            "list_append element type mismatch (in {bucket_addr})"
+                        )));
+                    }
+                    let out_elem = if elem == Type::Any {
+                        arg_tys[1].clone()
+                    } else {
+                        elem
+                    };
+                    Ok(Type::List(Box::new(out_elem)))
+                }
+                "#c.list_concat" => {
+                    let e0 = arg_tys[0].list_elem().cloned().ok_or_else(|| {
+                        Error::msg(format!("list_concat expects List (in {bucket_addr})"))
+                    })?;
+                    let e1 = arg_tys[1].list_elem().cloned().ok_or_else(|| {
+                        Error::msg(format!("list_concat expects List (in {bucket_addr})"))
+                    })?;
+                    if !e0.matches(&e1) {
+                        return Err(Error::msg(format!(
+                            "list_concat element type mismatch (in {bucket_addr})"
+                        )));
+                    }
+                    let out = if e0 == Type::Any { e1 } else { e0 };
+                    Ok(Type::List(Box::new(out)))
+                }
+                "#c.list_remove" => {
+                    let elem = arg_tys[0].list_elem().cloned().ok_or_else(|| {
+                        Error::msg(format!(
+                            "list_remove expects List, got {} (in {bucket_addr})",
+                            arg_tys[0].name()
+                        ))
+                    })?;
+                    if arg_tys[1] != Type::Num && arg_tys[1] != Type::Any {
+                        return Err(Error::msg(format!(
+                            "list_remove index must be Num (in {bucket_addr})"
+                        )));
+                    }
+                    Ok(Type::List(Box::new(elem)))
+                }
                 _ => {
                     for (i, pty) in callee.contract.params.iter().enumerate() {
                         if !pty.ty.matches(&arg_tys[i]) {
@@ -368,16 +556,6 @@ fn infer_type(
                 match s {
                     crate::ast::Stmt::Bind { name, value } => {
                         let ty = infer_type(value, &env, reg, bucket_addr)?;
-                        if env.contains_key(name) && !env.get(name).unwrap().matches(&ty) {
-                            // allow shadowing with same or any
-                        }
-                        if env.contains_key(name)
-                            && env.keys().filter(|k| *k == name).count() > 0
-                        {
-                            // duplicate local in same block already checked? allow shadow
-                        }
-                        // duplicate bind in same block: error if already a local from this block
-                        // Track only: if we insert twice in this loop without shadow intent
                         env.insert(name.clone(), ty);
                     }
                     crate::ast::Stmt::Run(e) => {

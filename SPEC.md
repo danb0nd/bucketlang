@@ -91,14 +91,32 @@ Literals: `3`, `2.5`, `true`, `false`, `"string"`.
 | `Num` | `3`, `2.5` | `+ - * /`, numeric comparisons |
 | `Bool` | `true`, `false` | `&& \|\| !`, `== !=` |
 | `Str` | `"hi"` | `+` concatenates; `== !=` |
+| `List[T]` | `[1, 2]`, `[]` | `T` any value type (incl. records / nested lists). Immutable; ops return new lists. |
+| `{ f: T, … }` | `{ x: 1, y: 2 }` | Record (named product). Field access `p.x`. Bootstrap new structures in-language. |
 
-`print` accepts any of these. `@test` expected values can be Num, Bool, or Str.
+`print` accepts any of these. `@test` expected values can be Num, Bool, Str, List, or Record.
+
+### Control + lists + records
+
+```text
+if cond then a else b
+
+list_len(xs) list_nth(xs, i) list_append(xs, x)
+list_concat(a, b) list_remove(xs, i)   // 0-based; OOB = runtime error
+
+point(x: Num, y: Num) -> { x: Num, y: Num } "ctor" { { x: x, y: y } }
+p.x
+```
+
+**Bootstrap rule:** new data structures = record shapes + constructor/helper buckets (and optional tag fields for sum-like encodings). No new cores required.
+
+Buckets may call themselves (recursion) or each other; eval aborts past depth 256.
 
 ### Address spaces
 
 | Prefix | Who | Notes |
 |---|---|---|
-| `#c.*` | Language | Cores: `add` `sub` `mul` `div` `eq` `ne` `lt` `gt` `le` `ge` `and` `or` `not` `print` `assert_eq` |
+| `#c.*` | Language | Cores: arithmetic/compare/logic, `print` `assert_eq`, `list_len` `list_nth` `list_append` `list_concat` `list_remove` |
 | `#b…` | User / compiler | Sequential mint or manual |
 | `#t…` | Compiler | From `@test` only |
 
@@ -108,12 +126,14 @@ Labels are sugar; after compile, bodies use addresses. `print` → `#c.print`.
 
 - **Strict (default):** every user bucket needs a valid label + non-empty `"desc"`.
 - **`--non-strict` / `--anon`:** label and/or desc may be omitted.
+- **Dev / test profile (default):** `@test` lines lower to real `#t…` shadow buckets; `bkt run` executes them before `@entry`.
+- **`--release`:** tests are stripped from the compiled program (no `#t…`); `bkt run` only evaluates `@entry`. Use for a final/production build. Explicit `--dev` is optional (same as default).
 
 Identifiers: `[A-Za-z_][A-Za-z0-9_]*`, max 64, ASCII. Reserved: `Num` `Bool` `Str` `print` `true` `false`. Prefix `_` to silence unused warnings.
 
 ### Complexity budget (user + test bodies)
 
-After resolving infix to `#c.*`: max **32** AST nodes, depth **10**, **8** call sites per bucket. Cores exempt.
+After resolving infix to `#c.*`: max **32** AST nodes, depth **10**, **12** call sites per bucket. Cores exempt.
 
 ## Body rules
 
@@ -140,6 +160,11 @@ bkt run file.bkt --arg 5
 bkt run file.bkt --arg hello          # Str / Bool / Num parsed from entry contract
 bkt inspect file.bkt                  # all layers
 bkt inspect file.bkt --graph --ast --json
+
+# LLM live loop (interpret path)
+bkt context file.bkt --bucket sum           # JSON: contract, body, neighborhood, @tests
+bkt edit file.bkt --bucket sum --body '…'   # dry-run: recompile + run related tests
+bkt edit file.bkt --bucket sum --body '…' --write
 ```
 
 `bkt run` default: **only** `print` output. Opt in with `--show-result`, `--show-tests`, or `-v`.  

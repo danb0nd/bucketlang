@@ -6,6 +6,28 @@ pub fn canonical_repr(expr: &Expr) -> String {
         Expr::Bool(b) => format!("B({b})"),
         Expr::Str(s) => format!("S({s:?})"),
         Expr::Var(p) => format!("V({p})"),
+        Expr::List(elems) => {
+            let inner: Vec<String> = elems.iter().map(canonical_repr).collect();
+            format!("L[{}]", inner.join(","))
+        }
+        Expr::Record(fields) => {
+            let inner: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{k}={}", canonical_repr(v)))
+                .collect();
+            format!("R{{{}}}", inner.join(","))
+        }
+        Expr::Field { base, field } => format!("F({}.{})", canonical_repr(base), field),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => format!(
+            "IF({},{},{})",
+            canonical_repr(cond),
+            canonical_repr(then_branch),
+            canonical_repr(else_branch)
+        ),
         Expr::Call { target, args } => {
             let inner: Vec<String> = args.iter().map(canonical_repr).collect();
             format!("C({target};{})", inner.join(","))

@@ -1,8 +1,9 @@
 use bucketlang::ast::BucketKind;
 use bucketlang::canonical::canonical_repr;
-use bucketlang::compile::{compile, CompileOptions};
+use bucketlang::compile::{compile, BuildProfile, CompileOptions};
 use bucketlang::eval::eval_bucket;
 use bucketlang::graph::{build_graph, to_dot};
+use bucketlang::harness::{build_context, run_subject_tests, splice_bucket_body, EditResult};
 use bucketlang::lint::unused_warnings;
 use bucketlang::render::{render_labelled, render_raw};
 use bucketlang::value::{parse_arg, Value};
@@ -26,10 +27,16 @@ enum Commands {
         file: PathBuf,
         #[arg(long)]
         no_warn: bool,
+        /// Include @test shadow buckets (default)
+        #[arg(long, group = "profile")]
+        dev: bool,
+        /// Strip @test from the compiled program
+        #[arg(long, group = "profile")]
+        release: bool,
         #[arg(long = "non-strict", alias = "anon")]
         non_strict: bool,
     },
-    /// Run shadow tests and @entry (default: only program print output)
+    /// Run (dev: run tests then entry; release: entry only)
     Run {
         file: PathBuf,
         #[arg(long, action = clap::ArgAction::Append)]
@@ -50,6 +57,12 @@ enum Commands {
         /// Suppress unused param/local warnings
         #[arg(long)]
         no_warn: bool,
+        /// Include @test shadow buckets (default)
+        #[arg(long, group = "run_profile")]
+        dev: bool,
+        /// Strip @test; run entry only
+        #[arg(long, group = "run_profile")]
+        release: bool,
         #[arg(long = "non-strict", alias = "anon")]
         non_strict: bool,
     },
@@ -93,6 +106,36 @@ enum Commands {
         no_cores: bool,
         #[arg(long)]
         no_tests: bool,
+        /// Include @test in dumps (default)
+        #[arg(long, group = "inspect_profile")]
+        dev: bool,
+        /// Strip @test from compiled dump
+        #[arg(long, group = "inspect_profile")]
+        release: bool,
+        #[arg(long = "non-strict", alias = "anon")]
+        non_strict: bool,
+    },
+    /// JSON context pack for one bucket (LLM iterate)
+    Context {
+        file: PathBuf,
+        #[arg(long)]
+        bucket: String,
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        #[arg(long = "non-strict", alias = "anon")]
+        non_strict: bool,
+    },
+    /// Replace one bucket body, recompile, run related @tests
+    Edit {
+        file: PathBuf,
+        #[arg(long)]
+        bucket: String,
+        /// New body (expression / statements inside the braces)
+        #[arg(long)]
+        body: String,
+        /// Write changes back to the file (default: dry-run, print new source)
+        #[arg(long)]
+        write: bool,
         #[arg(long = "non-strict", alias = "anon")]
         non_strict: bool,
     },
@@ -123,9 +166,14 @@ fn emit_warnings(reg: &bucketlang::registry::Registry, no_warn: bool) {
     }
 }
 
-fn opts(non_strict: bool) -> CompileOptions {
+fn opts(non_strict: bool, release: bool) -> CompileOptions {
     CompileOptions {
         strict: !non_strict,
+        profile: if release {
+            BuildProfile::Release
+        } else {
+            BuildProfile::Dev
+        },
     }
 }
 
@@ -159,16 +207,19 @@ fn real_main() -> Result<(), String> {
         Commands::Check {
             file,
             no_warn,
+            dev: _,
+            release,
             non_strict,
         } => {
             let src = read_source(&file)?;
-            let compiled = compile(&src, opts(non_strict)).map_err(|e| e.to_string())?;
+            let compiled = compile(&src, opts(non_strict, release)).map_err(|e| e.to_string())?;
             if compiled.registry.entry.is_none() {
                 return Err("missing @entry (required for check)".into());
             }
             emit_warnings(&compiled.registry, no_warn);
+            let profile = if release { "release" } else { "dev" };
             println!(
-                "ok: {} user buckets, {} tests, entry={}",
+                "ok ({profile}): {} user buckets, {} tests, entry={}",
                 compiled
                     .registry
                     .buckets
@@ -189,16 +240,18 @@ fn real_main() -> Result<(), String> {
             show_tests,
             verbose,
             no_warn,
+            dev: _,
+            release,
             non_strict,
         } => {
             let src = read_source(&file)?;
-            let compiled = compile(&src, opts(non_strict)).map_err(|e| e.to_string())?;
+            let compiled = compile(&src, opts(non_strict, release)).map_err(|e| e.to_string())?;
             let reg = &compiled.registry;
             emit_warnings(reg, no_warn);
             let show_tests = show_tests || verbose;
             let show_result = show_result || verbose;
 
-            // Tests must not spam stdout — only @entry print is user-visible by default.
+            // Dev: run shadow tests (stdout sink). Release: test_ids is empty.
             let mut test_sink = io::sink();
             for tid in &reg.test_ids {
                 eval_bucket(reg, tid, &[], &mut test_sink).map_err(|e| {
@@ -206,7 +259,11 @@ fn real_main() -> Result<(), String> {
                 })?;
             }
             if show_tests {
-                eprintln!("tests: {} passed", reg.test_ids.len());
+                if release {
+                    eprintln!("tests: skipped (release)");
+                } else {
+                    eprintln!("tests: {} passed", reg.test_ids.len());
+                }
             }
 
             let entry_id = if let Some(e) = &entry {
@@ -280,10 +337,12 @@ fn real_main() -> Result<(), String> {
             bucket,
             no_cores,
             no_tests,
+            dev: _,
+            release,
             non_strict,
         } => {
             let src = read_source(&file)?;
-            let compiled = compile(&src, opts(non_strict)).map_err(|e| e.to_string())?;
+            let compiled = compile(&src, opts(non_strict, release)).map_err(|e| e.to_string())?;
             let reg = &compiled.registry;
             let g = build_graph(reg);
 
@@ -464,6 +523,78 @@ fn real_main() -> Result<(), String> {
                 print!("{}", to_dot(&g));
             }
             Ok(())
+        }
+        Commands::Context {
+            file,
+            bucket,
+            depth,
+            non_strict,
+        } => {
+            let src = read_source(&file)?;
+            let compiled = compile(&src, opts(non_strict, false)).map_err(|e| e.to_string())?;
+            let mut pack =
+                build_context(&compiled.registry, &bucket, depth).map_err(|e| e.to_string())?;
+            pack.file_hint = file.display().to_string();
+            println!("{}", serde_json::to_string_pretty(&pack).unwrap());
+            Ok(())
+        }
+        Commands::Edit {
+            file,
+            bucket,
+            body,
+            write,
+            non_strict,
+        } => {
+            let src = read_source(&file)?;
+            let new_src = splice_bucket_body(&src, &bucket, &body).map_err(|e| e.to_string())?;
+            let compiled = match compile(&new_src, opts(non_strict, false)) {
+                Ok(c) => c,
+                Err(e) => {
+                    let result = EditResult {
+                        ok: false,
+                        bucket: bucket.clone(),
+                        tests_run: 0,
+                        tests_passed: 0,
+                        error: Some(e.to_string()),
+                        source: None,
+                    };
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    return Err(e.to_string());
+                }
+            };
+            let mut sink = io::sink();
+            match run_subject_tests(&compiled.registry, &bucket, &mut sink) {
+                Ok((run, passed)) => {
+                    if write {
+                        if file.as_os_str() == "-" {
+                            return Err("--write requires a real file path".into());
+                        }
+                        std::fs::write(&file, &new_src).map_err(|e| e.to_string())?;
+                    }
+                    let result = EditResult {
+                        ok: true,
+                        bucket: bucket.clone(),
+                        tests_run: run,
+                        tests_passed: passed,
+                        error: None,
+                        source: if write { None } else { Some(new_src) },
+                    };
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    Ok(())
+                }
+                Err(e) => {
+                    let result = EditResult {
+                        ok: false,
+                        bucket: bucket.clone(),
+                        tests_run: 0,
+                        tests_passed: 0,
+                        error: Some(e.to_string()),
+                        source: None,
+                    };
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    Err(e.to_string())
+                }
+            }
         }
     }
 }

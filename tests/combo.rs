@@ -1,13 +1,21 @@
-use bucketlang::compile::{compile, CompileOptions};
+use bucketlang::compile::{compile, BuildProfile, CompileOptions};
 use bucketlang::eval::eval_bucket;
 use bucketlang::value::Value;
+
+fn strict_dev() -> CompileOptions {
+    CompileOptions {
+        strict: true,
+        profile: BuildProfile::Dev,
+    }
+}
 
 #[test]
 fn combo_five_is_twelve() {
     let src = std::fs::read_to_string("examples/combo.bkt").unwrap();
-    let compiled = compile(&src, CompileOptions { strict: true }).unwrap();
+    let compiled = compile(&src, strict_dev()).unwrap();
     let reg = &compiled.registry;
     assert!(reg.entry.is_some());
+    assert!(!reg.test_ids.is_empty());
     let mut out = Vec::new();
     for tid in &reg.test_ids {
         eval_bucket(reg, tid, &[], &mut out).unwrap();
@@ -24,6 +32,29 @@ fn combo_five_is_twelve() {
     let v2 = eval_bucket(reg, combo, &[Value::Num(5.0)], &mut out3).unwrap();
     assert_eq!(v2, Value::Num(12.0));
     assert!(out3.is_empty());
+}
+
+#[test]
+fn release_strips_tests() {
+    let src = std::fs::read_to_string("examples/combo.bkt").unwrap();
+    let compiled = compile(
+        &src,
+        CompileOptions {
+            strict: true,
+            profile: BuildProfile::Release,
+        },
+    )
+    .unwrap();
+    assert!(compiled.registry.test_ids.is_empty());
+    assert!(!compiled
+        .registry
+        .buckets
+        .values()
+        .any(|b| b.kind == bucketlang::ast::BucketKind::Test));
+    let entry = compiled.registry.entry.as_deref().unwrap();
+    let mut out = Vec::new();
+    let v = eval_bucket(&compiled.registry, entry, &[Value::Num(5.0)], &mut out).unwrap();
+    assert_eq!(v, Value::Num(12.0));
 }
 
 #[test]
@@ -44,7 +75,7 @@ fn bool_and_str_work() {
       "ok"
     }
     "#;
-    let compiled = compile(src, CompileOptions { strict: true }).unwrap();
+    let compiled = compile(src, strict_dev()).unwrap();
     let mut out = Vec::new();
     for tid in &compiled.registry.test_ids {
         eval_bucket(&compiled.registry, tid, &[], &mut out).unwrap();
@@ -66,7 +97,7 @@ fn warns_unused_param() {
       print(1)
     }
     "#;
-    let compiled = compile(src, CompileOptions { strict: true }).unwrap();
+    let compiled = compile(src, strict_dev()).unwrap();
     let warns = bucketlang::unused_warnings(&compiled.registry);
     assert!(warns
         .iter()
@@ -81,7 +112,14 @@ fn non_strict_allows_anon() {
       x + 1
     }
     "#;
-    let compiled = compile(src, CompileOptions { strict: false }).unwrap();
+    let compiled = compile(
+        src,
+        CompileOptions {
+            strict: false,
+            profile: BuildProfile::Dev,
+        },
+    )
+    .unwrap();
     let mut out = Vec::new();
     let v = eval_bucket(&compiled.registry, "#b00000001", &[Value::Num(41.0)], &mut out)
         .unwrap();
