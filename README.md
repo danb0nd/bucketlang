@@ -235,6 +235,8 @@ Full grammar and rules: [SPEC.md](SPEC.md).
 
 Prototype / research code. Expect breaking changes. Useful today for experimenting with bucket-shaped programs, call graphs, and small typed expression bodies.
 
+Yes — this was **vibecoded with [Cursor](https://cursor.com)** to get something running quickly. The ideas are intentional; the implementation is an early sketch, not polished systems engineering. PRs and sharp edges welcome.
+
 ## License
 
 MIT (see `Cargo.toml`).
