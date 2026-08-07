@@ -1,11 +1,9 @@
-
 @test triple(3) == 9
 triple(x: Num) -> Num "multiply by 3" {
-    x * 3
+  x * 3
 }
 
-
 @entry
-main(a: Num) -> Num "Entrypoint" {
-    print(triple(5))
+main() -> Num "print triple(5)" {
+  print(triple(5))
 }
