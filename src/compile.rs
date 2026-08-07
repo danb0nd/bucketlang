@@ -1,5 +1,5 @@
 use crate::ast::{
-    Bucket, BucketKind, Contract, Expr, ImportDecl, MatchArm, RawBucket, RawProgram, Type,
+    Bucket, BucketKind, Contract, Expr, ExprKind, ImportDecl, MatchArm, RawBucket, RawProgram, Type,
 };
 use crate::canonical::content_hash;
 use crate::complexity::{measure, within_budget};
@@ -700,11 +700,14 @@ fn lower(
                 for a in &test.args {
                     args.push(resolve_expr(a, &reg, &known, &ctors)?);
                 }
+                // The wrapper call has no source of its own — the user wrote a
+                // `@test` annotation, not this expression. Its arguments keep
+                // their spans, so `any_span` still lands on the @test line.
                 let body = if test.expect_error {
-                    Expr::Call {
+                    Expr::synthetic(ExprKind::Call {
                         target: call_target,
                         args,
-                    }
+                    })
                 } else {
                     let expected = resolve_expr(
                         test.expected.as_ref().ok_or_else(|| {
@@ -714,16 +717,14 @@ fn lower(
                         &known,
                         &ctors,
                     )?;
-                    Expr::Call {
+                    let call = Expr::synthetic(ExprKind::Call {
+                        target: call_target,
+                        args,
+                    });
+                    Expr::synthetic(ExprKind::Call {
                         target: "#c.assert_eq".into(),
-                        args: vec![
-                            Expr::Call {
-                                target: call_target,
-                                args,
-                            },
-                            expected,
-                        ],
-                    }
+                        args: vec![call, expected],
+                    })
                 };
                 if contains_print(&body) {
                     return Err(Error::msg("print / #c.print is forbidden inside @test"));
@@ -835,17 +836,31 @@ fn resolve_name(target: &str, reg: &Registry, known: &BTreeSet<String>) -> Resul
     }
 }
 
+/// Resolve names to addresses, keeping each node's source span.
+///
+/// The span survives resolution on purpose: a runtime error in a resolved body
+/// still has to point at the line the user actually wrote.
 fn resolve_expr(
     expr: &Expr,
     reg: &Registry,
     known: &BTreeSet<String>,
     ctors: &BTreeMap<String, CtorInfo>,
 ) -> Result<Expr> {
-    match expr {
-        Expr::Num(n) => Ok(Expr::Num(*n)),
-        Expr::Bool(b) => Ok(Expr::Bool(*b)),
-        Expr::Str(s) => Ok(Expr::Str(s.clone())),
-        Expr::Var(p) => {
+    let kind = resolve_kind(expr, reg, known, ctors)?;
+    Ok(Expr::new(kind, expr.span))
+}
+
+fn resolve_kind(
+    expr: &Expr,
+    reg: &Registry,
+    known: &BTreeSet<String>,
+    ctors: &BTreeMap<String, CtorInfo>,
+) -> Result<ExprKind> {
+    match &expr.kind {
+        ExprKind::Num(n) => Ok(ExprKind::Num(*n)),
+        ExprKind::Bool(b) => Ok(ExprKind::Bool(*b)),
+        ExprKind::Str(s) => Ok(ExprKind::Str(s.clone())),
+        ExprKind::Var(p) => {
             if let Some(c) = ctors.get(p) {
                 let nullary = match c {
                     CtorInfo::Mono { payload: None, .. } => true,
@@ -856,7 +871,7 @@ fn resolve_expr(
                     _ => false,
                 };
                 if nullary {
-                    return Ok(Expr::Variant {
+                    return Ok(ExprKind::Variant {
                         tag: p.clone(),
                         payload: None,
                     });
@@ -865,34 +880,34 @@ fn resolve_expr(
                     "variant '{p}' needs a payload: {p}(...)"
                 )));
             }
-            Ok(Expr::Var(p.clone()))
+            Ok(ExprKind::Var(p.clone()))
         }
-        Expr::List(elems) => {
+        ExprKind::List(elems) => {
             let mut out = Vec::new();
             for e in elems {
                 out.push(resolve_expr(e, reg, known, ctors)?);
             }
-            Ok(Expr::List(out))
+            Ok(ExprKind::List(out))
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             let mut out = Vec::new();
             for (k, v) in fields {
                 out.push((k.clone(), resolve_expr(v, reg, known, ctors)?));
             }
-            Ok(Expr::Record(out))
+            Ok(ExprKind::Record(out))
         }
-        Expr::Field { base, field } => Ok(Expr::Field {
+        ExprKind::Field { base, field } => Ok(ExprKind::Field {
             base: Box::new(resolve_expr(base, reg, known, ctors)?),
             field: field.clone(),
         }),
-        Expr::Variant { tag, payload } => Ok(Expr::Variant {
+        ExprKind::Variant { tag, payload } => Ok(ExprKind::Variant {
             tag: tag.clone(),
             payload: match payload {
                 None => None,
                 Some(p) => Some(Box::new(resolve_expr(p, reg, known, ctors)?)),
             },
         }),
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Match { scrutinee, arms } => {
             let mut out_arms = Vec::new();
             for a in arms {
                 out_arms.push(MatchArm {
@@ -901,21 +916,21 @@ fn resolve_expr(
                     body: resolve_expr(&a.body, reg, known, ctors)?,
                 });
             }
-            Ok(Expr::Match {
+            Ok(ExprKind::Match {
                 scrutinee: Box::new(resolve_expr(scrutinee, reg, known, ctors)?),
                 arms: out_arms,
             })
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => Ok(Expr::If {
+        } => Ok(ExprKind::If {
             cond: Box::new(resolve_expr(cond, reg, known, ctors)?),
             then_branch: Box::new(resolve_expr(then_branch, reg, known, ctors)?),
             else_branch: Box::new(resolve_expr(else_branch, reg, known, ctors)?),
         }),
-        Expr::Call { target, args } => {
+        ExprKind::Call { target, args } => {
             if let Some(c) = ctors.get(target) {
                 let needs_payload = match c {
                     CtorInfo::Mono {
@@ -934,7 +949,7 @@ fn resolve_expr(
                             args.len()
                         )));
                     }
-                    return Ok(Expr::Variant {
+                    return Ok(ExprKind::Variant {
                         tag: target.clone(),
                         payload: Some(Box::new(resolve_expr(&args[0], reg, known, ctors)?)),
                     });
@@ -948,12 +963,12 @@ fn resolve_expr(
             for a in args {
                 out_args.push(resolve_expr(a, reg, known, ctors)?);
             }
-            Ok(Expr::Call {
+            Ok(ExprKind::Call {
                 target: resolved,
                 args: out_args,
             })
         }
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             let mut out_s = Vec::new();
             for s in stmts {
                 match s {
@@ -970,7 +985,7 @@ fn resolve_expr(
                     }
                 }
             }
-            Ok(Expr::Block {
+            Ok(ExprKind::Block {
                 stmts: out_s,
                 result: Box::new(resolve_expr(result, reg, known, ctors)?),
             })
@@ -979,23 +994,23 @@ fn resolve_expr(
 }
 
 fn contains_print(expr: &Expr) -> bool {
-    match expr {
-        Expr::Call { target, args } => {
+    match &expr.kind {
+        ExprKind::Call { target, args } => {
             (target == "#c.print" || target == "print") || args.iter().any(contains_print)
         }
-        Expr::List(elems) => elems.iter().any(contains_print),
-        Expr::Record(fields) => fields.iter().any(|(_, v)| contains_print(v)),
-        Expr::Field { base, .. } => contains_print(base),
-        Expr::Variant { payload, .. } => payload.as_ref().is_some_and(|p| contains_print(p)),
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::List(elems) => elems.iter().any(contains_print),
+        ExprKind::Record(fields) => fields.iter().any(|(_, v)| contains_print(v)),
+        ExprKind::Field { base, .. } => contains_print(base),
+        ExprKind::Variant { payload, .. } => payload.as_ref().is_some_and(|p| contains_print(p)),
+        ExprKind::Match { scrutinee, arms } => {
             contains_print(scrutinee) || arms.iter().any(|a| contains_print(&a.body))
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
         } => contains_print(cond) || contains_print(then_branch) || contains_print(else_branch),
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             stmts.iter().any(|s| match s {
                 crate::ast::Stmt::Bind { value, .. } => contains_print(value),
                 crate::ast::Stmt::Run(e) => contains_print(e),
@@ -1014,7 +1029,7 @@ fn infer_variant(
     ctors: &BTreeMap<String, CtorInfo>,
 ) -> Result<Type> {
     let info = ctors.get(tag).ok_or_else(|| {
-        Error::msg(format!("unknown variant tag '{tag}' (in {bucket_addr})"))
+        Error::msg(format!("unknown variant tag '{tag}'"))
     })?;
     match info {
         CtorInfo::Mono {
@@ -1027,7 +1042,7 @@ fn infer_variant(
                     let got = infer_type(p, env, reg, bucket_addr, ctors)?;
                     if !expected.matches(&got) {
                         return Err(Error::msg(format!(
-                            "variant '{tag}' payload type mismatch: expected {}, got {} (in {bucket_addr})",
+                            "variant '{tag}' payload type mismatch: expected {}, got {}",
                             expected.name(),
                             got.name()
                         )));
@@ -1035,12 +1050,12 @@ fn infer_variant(
                 }
                 (None, Some(_)) => {
                     return Err(Error::msg(format!(
-                        "variant '{tag}' takes no payload (in {bucket_addr})"
+                        "variant '{tag}' takes no payload"
                     )));
                 }
                 (Some(_), None) => {
                     return Err(Error::msg(format!(
-                        "variant '{tag}' needs a payload (in {bucket_addr})"
+                        "variant '{tag}' needs a payload"
                     )));
                 }
             }
@@ -1053,7 +1068,7 @@ fn infer_variant(
         } => {
             match (payload_template, payload) {
                 (None, None) => Err(Error::msg(format!(
-                    "cannot infer type parameters for '{tag}' without expected type (in {bucket_addr})"
+                    "cannot infer type parameters for '{tag}' without expected type"
                 ))),
                 (Some(tmpl), Some(p)) => {
                     let got = infer_type(p, env, reg, bucket_addr, ctors)?;
@@ -1070,7 +1085,7 @@ fn infer_variant(
                     } else if !tmpl.matches(&got) {
                         // Non-param template (shouldn't happen often)
                         return Err(Error::msg(format!(
-                            "variant '{tag}' payload type mismatch: expected {}, got {} (in {bucket_addr})",
+                            "variant '{tag}' payload type mismatch: expected {}, got {}",
                             tmpl.name(),
                             got.name()
                         )));
@@ -1078,10 +1093,10 @@ fn infer_variant(
                     subst_type(variant_template, &subst)
                 }
                 (None, Some(_)) => Err(Error::msg(format!(
-                    "variant '{tag}' takes no payload (in {bucket_addr})"
+                    "variant '{tag}' takes no payload"
                 ))),
                 (Some(_), None) => Err(Error::msg(format!(
-                    "variant '{tag}' needs a payload (in {bucket_addr})"
+                    "variant '{tag}' needs a payload"
                 ))),
             }
         }
@@ -1098,7 +1113,7 @@ fn check_variant(
     ctors: &BTreeMap<String, CtorInfo>,
 ) -> Result<Type> {
     let info = ctors.get(tag).ok_or_else(|| {
-        Error::msg(format!("unknown variant tag '{tag}' (in {bucket_addr})"))
+        Error::msg(format!("unknown variant tag '{tag}'"))
     })?;
     match info {
         CtorInfo::Mono { .. } => {
@@ -1107,7 +1122,7 @@ fn check_variant(
                 Ok(expected.clone())
             } else {
                 Err(Error::msg(format!(
-                    "variant '{tag}' has type {}, expected {} (in {bucket_addr})",
+                    "variant '{tag}' has type {}, expected {}",
                     got.name(),
                     expected.name()
                 )))
@@ -1120,13 +1135,13 @@ fn check_variant(
         } => {
             let expected_tags = expected.variant_tags().ok_or_else(|| {
                 Error::msg(format!(
-                    "expected {}, got variant '{tag}' (in {bucket_addr})",
+                    "expected {}, got variant '{tag}'",
                     expected.name()
                 ))
             })?;
             let exp_payload = expected_tags.get(tag).ok_or_else(|| {
                 Error::msg(format!(
-                    "tag '{tag}' not part of {} (in {bucket_addr})",
+                    "tag '{tag}' not part of {}",
                     expected.name()
                 ))
             })?;
@@ -1147,14 +1162,14 @@ fn check_variant(
                         Ok(expected.clone())
                     } else {
                         Err(Error::msg(format!(
-                            "variant '{tag}' instantiated to {}, expected {} (in {bucket_addr})",
+                            "variant '{tag}' instantiated to {}, expected {}",
                             inst.name(),
                             expected.name()
                         )))
                     }
                 }
                 _ => Err(Error::msg(format!(
-                    "variant '{tag}' arity mismatch for {} (in {bucket_addr})",
+                    "variant '{tag}' arity mismatch for {}",
                     expected.name()
                 ))),
             }
@@ -1162,6 +1177,29 @@ fn check_variant(
     }
 }
 
+/// A type mismatch, with `expected` and `found` as separate fields so an agent
+/// can act on them without parsing prose, plus a hint for the mistakes that
+/// actually come up.
+fn type_mismatch(expected: &Type, got: &Type) -> Error {
+    let e = expected.name();
+    let g = got.name();
+    let mut d = crate::error::Diagnostic::new(
+        crate::error::Stage::Type,
+        "type_mismatch",
+        format!("expected {e}, found {g}"),
+    )
+    .expected(e.clone())
+    .found(g.clone());
+
+    if e.starts_with("List[") && !g.starts_with("List[") {
+        d = d.hint(format!("wrap the value in a list literal: [{g} value]"));
+    }
+    Error::diag(d)
+}
+
+/// Check `expr` against `expected`, tagging any failure with the smallest
+/// expression that contains it. The recursion fills locations innermost-first,
+/// so the reported span is the precise sub-expression rather than the whole body.
 fn check_type(
     expr: &Expr,
     expected: &Type,
@@ -1170,11 +1208,26 @@ fn check_type(
     bucket_addr: &str,
     ctors: &BTreeMap<String, CtorInfo>,
 ) -> Result<Type> {
-    match expr {
-        Expr::Variant { tag, payload } => {
+    check_type_inner(expr, expected, env, reg, bucket_addr, ctors)
+        .map_err(|e| {
+            e.fill(crate::error::Stage::Type, expr.any_span(), bucket_addr)
+                .with_bucket_label(reg.get(bucket_addr).and_then(|b| b.label.clone()))
+        })
+}
+
+fn check_type_inner(
+    expr: &Expr,
+    expected: &Type,
+    env: &std::collections::HashMap<String, Type>,
+    reg: &Registry,
+    bucket_addr: &str,
+    ctors: &BTreeMap<String, CtorInfo>,
+) -> Result<Type> {
+    match &expr.kind {
+        ExprKind::Variant { tag, payload } => {
             check_variant(tag, payload, expected, env, reg, bucket_addr, ctors)
         }
-        Expr::Call { target, args } => {
+        ExprKind::Call { target, args } => {
             let callee = reg.get(target).ok_or_else(|| {
                 Error::msg(format!(
                     "call to unknown bucket {target} from {bucket_addr}"
@@ -1182,7 +1235,7 @@ fn check_type(
             })?;
             if args.len() != callee.contract.params.len() {
                 return Err(Error::msg(format!(
-                    "arity mismatch calling {target} (in {bucket_addr})"
+                    "arity mismatch calling {target}"
                 )));
             }
             for (a, p) in args.iter().zip(callee.contract.params.iter()) {
@@ -1192,23 +1245,15 @@ fn check_type(
             if expected.matches(&got) || got.matches(expected) {
                 Ok(expected.clone())
             } else {
-                Err(Error::msg(format!(
-                    "type mismatch: expected {}, got {} (in {bucket_addr})",
-                    expected.name(),
-                    got.name()
-                )))
+                Err(type_mismatch(expected, &got))
             }
         }
-        other => {
-            let got = infer_type(other, env, reg, bucket_addr, ctors)?;
+        _ => {
+            let got = infer_type(expr, env, reg, bucket_addr, ctors)?;
             if expected.matches(&got) || got.matches(expected) {
                 Ok(expected.clone())
             } else {
-                Err(Error::msg(format!(
-                    "type mismatch: expected {}, got {} (in {bucket_addr})",
-                    expected.name(),
-                    got.name()
-                )))
+                Err(type_mismatch(expected, &got))
             }
         }
     }
@@ -1221,15 +1266,29 @@ fn infer_type(
     bucket_addr: &str,
     ctors: &BTreeMap<String, CtorInfo>,
 ) -> Result<crate::ast::Type> {
+    infer_type_inner(expr, env, reg, bucket_addr, ctors)
+        .map_err(|e| {
+            e.fill(crate::error::Stage::Type, expr.any_span(), bucket_addr)
+                .with_bucket_label(reg.get(bucket_addr).and_then(|b| b.label.clone()))
+        })
+}
+
+fn infer_type_inner(
+    expr: &Expr,
+    env: &std::collections::HashMap<String, crate::ast::Type>,
+    reg: &Registry,
+    bucket_addr: &str,
+    ctors: &BTreeMap<String, CtorInfo>,
+) -> Result<crate::ast::Type> {
     use crate::ast::Type;
-    match expr {
-        Expr::Num(_) => Ok(Type::Num),
-        Expr::Bool(_) => Ok(Type::Bool),
-        Expr::Str(_) => Ok(Type::Str),
-        Expr::Var(name) => env.get(name).cloned().ok_or_else(|| {
+    match &expr.kind {
+        ExprKind::Num(_) => Ok(Type::Num),
+        ExprKind::Bool(_) => Ok(Type::Bool),
+        ExprKind::Str(_) => Ok(Type::Str),
+        ExprKind::Var(name) => env.get(name).cloned().ok_or_else(|| {
             Error::msg(format!("unknown name '{name}' in {bucket_addr}"))
         }),
-        Expr::List(elems) => {
+        ExprKind::List(elems) => {
             if elems.is_empty() {
                 return Ok(Type::List(Box::new(Type::Any)));
             }
@@ -1238,7 +1297,7 @@ fn infer_type(
                 let t = infer_type(e, env, reg, bucket_addr, ctors)?;
                 if !elem_ty.matches(&t) {
                     return Err(Error::msg(format!(
-                        "heterogeneous list elements {} vs {} (in {bucket_addr})",
+                        "heterogeneous list elements {} vs {}",
                         elem_ty.name(),
                         t.name()
                     )));
@@ -1249,7 +1308,7 @@ fn infer_type(
             }
             Ok(Type::List(Box::new(elem_ty)))
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             let mut map = std::collections::BTreeMap::new();
             for (k, v) in fields {
                 let ty = infer_type(v, env, reg, bucket_addr, ctors)?;
@@ -1257,27 +1316,27 @@ fn infer_type(
             }
             Ok(Type::Record(map))
         }
-        Expr::Field { base, field } => {
+        ExprKind::Field { base, field } => {
             let bt = infer_type(base, env, reg, bucket_addr, ctors)?;
             let fields = bt.record_fields().ok_or_else(|| {
                 Error::msg(format!(
-                    "field access on non-record {} (in {bucket_addr})",
+                    "field access on non-record {}",
                     bt.name()
                 ))
             })?;
             fields.get(field).cloned().ok_or_else(|| {
                 Error::msg(format!(
-                    "unknown field '{field}' on {} (in {bucket_addr})",
+                    "unknown field '{field}' on {}",
                     bt.name()
                 ))
             })
         }
-        Expr::Variant { tag, payload } => infer_variant(tag, payload, env, reg, bucket_addr, ctors),
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Variant { tag, payload } => infer_variant(tag, payload, env, reg, bucket_addr, ctors),
+        ExprKind::Match { scrutinee, arms } => {
             let st = infer_type(scrutinee, env, reg, bucket_addr, ctors)?;
             let tags = st.variant_tags().ok_or_else(|| {
                 Error::msg(format!(
-                    "match on non-variant {} (in {bucket_addr})",
+                    "match on non-variant {}",
                     st.name()
                 ))
             })?;
@@ -1286,14 +1345,14 @@ fn infer_type(
             for arm in arms {
                 if !tags.contains_key(&arm.tag) {
                     return Err(Error::msg(format!(
-                        "unknown match tag '{}' for {} (in {bucket_addr})",
+                        "unknown match tag '{}' for {}",
                         arm.tag,
                         st.name()
                     )));
                 }
                 if !seen.insert(arm.tag.clone()) {
                     return Err(Error::msg(format!(
-                        "duplicate match arm '{}' (in {bucket_addr})",
+                        "duplicate match arm '{}'",
                         arm.tag
                     )));
                 }
@@ -1306,13 +1365,13 @@ fn infer_type(
                     }
                     (None, Some(_)) => {
                         return Err(Error::msg(format!(
-                            "tag '{}' takes no payload (in {bucket_addr})",
+                            "tag '{}' takes no payload",
                             arm.tag
                         )));
                     }
                     (Some(_), None) => {
                         return Err(Error::msg(format!(
-                            "tag '{}' needs a binder like {}(x) (in {bucket_addr})",
+                            "tag '{}' needs a binder like {}(x)",
                             arm.tag, arm.tag
                         )));
                     }
@@ -1323,7 +1382,7 @@ fn infer_type(
                     Some(prev) => {
                         if !prev.matches(&bt) && !bt.matches(prev) {
                             return Err(Error::msg(format!(
-                                "match arms type mismatch {} vs {} (in {bucket_addr})",
+                                "match arms type mismatch {} vs {}",
                                 prev.name(),
                                 bt.name()
                             )));
@@ -1334,13 +1393,13 @@ fn infer_type(
             for tag in tags.keys() {
                 if !seen.contains(tag) {
                     return Err(Error::msg(format!(
-                        "non-exhaustive match: missing '{tag}' (in {bucket_addr})"
+                        "non-exhaustive match: missing '{tag}'"
                     )));
                 }
             }
-            result_ty.ok_or_else(|| Error::msg(format!("empty match (in {bucket_addr})")))
+            result_ty.ok_or_else(|| Error::msg(format!("empty match")))
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -1348,7 +1407,7 @@ fn infer_type(
             let ct = infer_type(cond, env, reg, bucket_addr, ctors)?;
             if ct != Type::Bool && ct != Type::Any {
                 return Err(Error::msg(format!(
-                    "if condition must be Bool, got {} (in {bucket_addr})",
+                    "if condition must be Bool, got {}",
                     ct.name()
                 )));
             }
@@ -1362,13 +1421,13 @@ fn infer_type(
                 }
             } else {
                 Err(Error::msg(format!(
-                    "if branches must match: {} vs {} (in {bucket_addr})",
+                    "if branches must match: {} vs {}",
                     t1.name(),
                     t2.name()
                 )))
             }
         }
-        Expr::Call { target, args } => {
+        ExprKind::Call { target, args } => {
             let callee = reg.get(target).ok_or_else(|| {
                 Error::msg(format!(
                     "call to unknown bucket {target} from {bucket_addr}"
@@ -1397,16 +1456,23 @@ fn infer_type(
                 "#c.add" => match (&arg_tys[0], &arg_tys[1]) {
                     (Type::Num, Type::Num) => Ok(Type::Num),
                     (Type::Str, Type::Str) => Ok(Type::Str),
-                    _ => Err(Error::msg(format!(
-                        "#c.add needs Num+Num or Str+Str (in {bucket_addr})"
-                    ))),
+                    (a, b) => Err(Error::diag(
+                        crate::error::Diagnostic::new(
+                            crate::error::Stage::Type,
+                            "add_operand_mismatch",
+                            format!("`+` needs Num + Num or Str + Str, found {} + {}", a.name(), b.name()),
+                        )
+                        .expected("Num + Num or Str + Str")
+                        .found(format!("{} + {}", a.name(), b.name()))
+                        .hint("both sides of `+` must be the same type; `+` on two Str values concatenates them"),
+                    )),
                 },
                 "#c.eq" | "#c.ne" | "#c.assert_eq" => {
                     if arg_tys[0].matches(&arg_tys[1]) {
                         Ok(Type::Bool)
                     } else {
                         Err(Error::msg(format!(
-                            "{target} needs same-typed args (in {bucket_addr})"
+                            "{target} needs same-typed args"
                         )))
                     }
                 }
@@ -1420,7 +1486,7 @@ fn infer_type(
                 "#c.list_len" => {
                     if arg_tys[0].list_elem().is_none() && arg_tys[0] != Type::Any {
                         return Err(Error::msg(format!(
-                            "list_len expects List, got {} (in {bucket_addr})",
+                            "list_len expects List, got {}",
                             arg_tys[0].name()
                         )));
                     }
@@ -1429,13 +1495,13 @@ fn infer_type(
                 "#c.list_nth" => {
                     let elem = arg_tys[0].list_elem().cloned().ok_or_else(|| {
                         Error::msg(format!(
-                            "list_nth expects List, got {} (in {bucket_addr})",
+                            "list_nth expects List, got {}",
                             arg_tys[0].name()
                         ))
                     })?;
                     if arg_tys[1] != Type::Num && arg_tys[1] != Type::Any {
                         return Err(Error::msg(format!(
-                            "list_nth index must be Num (in {bucket_addr})"
+                            "list_nth index must be Num"
                         )));
                     }
                     Ok(elem)
@@ -1443,13 +1509,13 @@ fn infer_type(
                 "#c.list_append" => {
                     let elem = arg_tys[0].list_elem().cloned().ok_or_else(|| {
                         Error::msg(format!(
-                            "list_append expects List, got {} (in {bucket_addr})",
+                            "list_append expects List, got {}",
                             arg_tys[0].name()
                         ))
                     })?;
                     if !elem.matches(&arg_tys[1]) {
                         return Err(Error::msg(format!(
-                            "list_append element type mismatch (in {bucket_addr})"
+                            "list_append element type mismatch"
                         )));
                     }
                     let out_elem = if elem == Type::Any {
@@ -1461,14 +1527,14 @@ fn infer_type(
                 }
                 "#c.list_concat" => {
                     let e0 = arg_tys[0].list_elem().cloned().ok_or_else(|| {
-                        Error::msg(format!("list_concat expects List (in {bucket_addr})"))
+                        Error::msg(format!("list_concat expects List"))
                     })?;
                     let e1 = arg_tys[1].list_elem().cloned().ok_or_else(|| {
-                        Error::msg(format!("list_concat expects List (in {bucket_addr})"))
+                        Error::msg(format!("list_concat expects List"))
                     })?;
                     if !e0.matches(&e1) {
                         return Err(Error::msg(format!(
-                            "list_concat element type mismatch (in {bucket_addr})"
+                            "list_concat element type mismatch"
                         )));
                     }
                     let out = if e0 == Type::Any { e1 } else { e0 };
@@ -1477,13 +1543,13 @@ fn infer_type(
                 "#c.list_remove" => {
                     let elem = arg_tys[0].list_elem().cloned().ok_or_else(|| {
                         Error::msg(format!(
-                            "list_remove expects List, got {} (in {bucket_addr})",
+                            "list_remove expects List, got {}",
                             arg_tys[0].name()
                         ))
                     })?;
                     if arg_tys[1] != Type::Num && arg_tys[1] != Type::Any {
                         return Err(Error::msg(format!(
-                            "list_remove index must be Num (in {bucket_addr})"
+                            "list_remove index must be Num"
                         )));
                     }
                     Ok(Type::List(Box::new(elem)))
@@ -1509,7 +1575,7 @@ fn infer_type(
                 }
             }
         }
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             let mut env = env.clone();
             for s in stmts {
                 match s {

@@ -183,13 +183,21 @@ fn opts(non_strict: bool, release: bool) -> CompileOptions {
     }
 }
 
+/// Render a diagnostic against the source it came from, so the terminal shows
+/// the offending line with a caret rather than a bare sentence.
+pub fn render(e: bucketlang::error::Error, source: &str, file: &PathBuf) -> String {
+    let name = file.display().to_string();
+    e.with_source(source, Some(&name)).render(Some(source))
+}
+
 fn compile_input(file: &PathBuf, o: CompileOptions) -> Result<bucketlang::CompileResult, String> {
-    if file.as_os_str() == "-" {
-        let src = read_source(file)?;
-        bucketlang::compile::compile(&src, o).map_err(|e| e.to_string())
+    let src = read_source(file)?;
+    let result = if file.as_os_str() == "-" {
+        bucketlang::compile::compile(&src, o)
     } else {
-        compile_file(file, o).map_err(|e| e.to_string())
-    }
+        compile_file(file, o)
+    };
+    result.map_err(|e| render(e, &src, file))
 }
 
 fn main() -> ExitCode {
@@ -197,7 +205,12 @@ fn main() -> ExitCode {
     match real_main() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e}");
+            // Rendered diagnostics carry their own `error[code]:` header.
+            if e.starts_with("error[") {
+                eprintln!("{e}");
+            } else {
+                eprintln!("error: {e}");
+            }
             ExitCode::FAILURE
         }
     }

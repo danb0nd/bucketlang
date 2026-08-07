@@ -1,28 +1,28 @@
-use crate::ast::{Expr, Stmt};
+use crate::ast::{Expr, ExprKind, Stmt};
 
 pub fn canonical_repr(expr: &Expr) -> String {
-    match expr {
-        Expr::Num(n) => format!("N({n})"),
-        Expr::Bool(b) => format!("B({b})"),
-        Expr::Str(s) => format!("S({s:?})"),
-        Expr::Var(p) => format!("V({p})"),
-        Expr::List(elems) => {
+    match &expr.kind {
+        ExprKind::Num(n) => format!("N({n})"),
+        ExprKind::Bool(b) => format!("B({b})"),
+        ExprKind::Str(s) => format!("S({s:?})"),
+        ExprKind::Var(p) => format!("V({p})"),
+        ExprKind::List(elems) => {
             let inner: Vec<String> = elems.iter().map(canonical_repr).collect();
             format!("L[{}]", inner.join(","))
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             let inner: Vec<String> = fields
                 .iter()
                 .map(|(k, v)| format!("{k}={}", canonical_repr(v)))
                 .collect();
             format!("R{{{}}}", inner.join(","))
         }
-        Expr::Field { base, field } => format!("F({}.{})", canonical_repr(base), field),
-        Expr::Variant { tag, payload } => match payload {
+        ExprKind::Field { base, field } => format!("F({}.{})", canonical_repr(base), field),
+        ExprKind::Variant { tag, payload } => match payload {
             None => format!("V({tag})"),
             Some(p) => format!("V({tag};{})", canonical_repr(p)),
         },
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Match { scrutinee, arms } => {
             let as_: Vec<String> = arms
                 .iter()
                 .map(|a| {
@@ -32,7 +32,7 @@ pub fn canonical_repr(expr: &Expr) -> String {
                 .collect();
             format!("M({};{})", canonical_repr(scrutinee), as_.join("|"))
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -42,11 +42,11 @@ pub fn canonical_repr(expr: &Expr) -> String {
             canonical_repr(then_branch),
             canonical_repr(else_branch)
         ),
-        Expr::Call { target, args } => {
+        ExprKind::Call { target, args } => {
             let inner: Vec<String> = args.iter().map(canonical_repr).collect();
             format!("C({target};{})", inner.join(","))
         }
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             let ss: Vec<String> = stmts
                 .iter()
                 .map(|s| match s {

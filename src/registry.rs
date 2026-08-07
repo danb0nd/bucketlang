@@ -1,4 +1,4 @@
-use crate::ast::{Bucket, BucketKind, Complexity, Contract, Expr, Param, Type};
+use crate::ast::{Bucket, BucketKind, Complexity, Contract, Expr, ExprKind, Param, Type};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -49,7 +49,8 @@ impl Registry {
                     .collect(),
                 ret,
             },
-            body: Expr::Num(0.0),
+            // Cores have no bucketlang body; this is an unused placeholder.
+            body: Expr::synthetic(ExprKind::Num(0.0)),
             kind: BucketKind::Core,
             content_hash: "core".into(),
             complexity: Complexity {
@@ -68,7 +69,11 @@ impl Registry {
 
     fn install_cores(&mut self) {
         let n2 = |a, b| vec![(a, Type::Num), (b, Type::Num)];
-        self.core("#c.add", None, "add / concat", n2("a", "b"), Type::Any);
+        // `+` is Num+Num or Str+Str. The parameters must be Any so the
+        // per-argument check does not reject a Str before the combined rule in
+        // infer_type gets to decide; that rule is what actually types this core.
+        let any2 = |a, b| vec![(a, Type::Any), (b, Type::Any)];
+        self.core("#c.add", None, "add / concat", any2("a", "b"), Type::Any);
         self.core("#c.sub", None, "subtract", n2("a", "b"), Type::Num);
         self.core("#c.mul", None, "multiply", n2("a", "b"), Type::Num);
         self.core("#c.div", None, "divide", n2("a", "b"), Type::Num);

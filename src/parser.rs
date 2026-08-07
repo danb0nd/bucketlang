@@ -25,6 +25,34 @@ impl<'a> Parser<'a> {
         t
     }
 
+    /// Byte offset where the next token starts — call before parsing a node to
+    /// remember where it began.
+    fn mark(&self) -> usize {
+        self.peek().start
+    }
+
+    /// Byte offset just past the last token consumed.
+    fn last_end(&self) -> usize {
+        if self.pos == 0 {
+            0
+        } else {
+            self.tokens[self.pos - 1].end
+        }
+    }
+
+    /// Attach the span running from `start` to whatever we have consumed so far.
+    /// This is what lets a diagnostic underline the whole offending expression
+    /// rather than just its first token.
+    fn spanned(&self, kind: ExprKind, start: usize) -> Expr {
+        Expr::new(
+            kind,
+            Some(Span {
+                start,
+                end: self.last_end(),
+            }),
+        )
+    }
+
     fn expect(&mut self, kind: TokenKind) -> Result<()> {
         let t = self.peek().clone();
         if t.kind != kind {
@@ -423,6 +451,7 @@ impl<'a> Parser<'a> {
 
     /// Bindings `name = expr`, side-effect lines like `print(x)`, then a final expression.
     fn parse_block_body(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let mut stmts = Vec::new();
 
         loop {
@@ -450,10 +479,13 @@ impl<'a> Parser<'a> {
                         return Ok(if stmts.is_empty() {
                             value
                         } else {
-                            Expr::Block {
-                                stmts,
-                                result: Box::new(value),
-                            }
+                            self.spanned(
+                                ExprKind::Block {
+                                    stmts,
+                                    result: Box::new(value),
+                                },
+                                start,
+                            )
                         });
                     }
                     stmts.push(Stmt::Bind { name, value });
@@ -466,10 +498,13 @@ impl<'a> Parser<'a> {
                 return Ok(if stmts.is_empty() {
                     expr
                 } else {
-                    Expr::Block {
-                        stmts,
-                        result: Box::new(expr),
-                    }
+                    self.spanned(
+                        ExprKind::Block {
+                            stmts,
+                            result: Box::new(expr),
+                        },
+                        start,
+                    )
                 });
             }
             // more follows — this expr is a side-effect statement
@@ -669,17 +704,18 @@ impl<'a> Parser<'a> {
 
     /// `a |> f` → `f(a)`; `a |> f(x)` → `f(a, x)` (thread as first arg).
     fn parse_pipe(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let mut left = self.parse_or()?;
         while self.peek().kind == TokenKind::PipeGt {
             let t = self.peek().clone();
             self.bump();
             let rhs = self.parse_or()?;
-            left = match rhs {
-                Expr::Call { target, mut args } => {
+            let kind = match rhs.kind {
+                ExprKind::Call { target, mut args } => {
                     args.insert(0, left);
-                    Expr::Call { target, args }
+                    ExprKind::Call { target, args }
                 }
-                Expr::Var(name) => Expr::Call {
+                ExprKind::Var(name) => ExprKind::Call {
                     target: name,
                     args: vec![left],
                 },
@@ -692,11 +728,13 @@ impl<'a> Parser<'a> {
                     ));
                 }
             };
+            left = self.spanned(kind, start);
         }
         Ok(left)
     }
 
     fn parse_match(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let t = self.peek().clone();
         self.expect(TokenKind::Ident)?; // match
         if t.text != "match" {
@@ -750,13 +788,17 @@ impl<'a> Parser<'a> {
                 "match needs at least one arm",
             ));
         }
-        Ok(Expr::Match {
-            scrutinee: Box::new(scrutinee),
-            arms,
-        })
+        Ok(self.spanned(
+            ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            start,
+        ))
     }
 
     fn parse_if(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let t = self.peek().clone();
         self.expect(TokenKind::Ident)?; // if
         if t.text != "if" {
@@ -785,40 +827,52 @@ impl<'a> Parser<'a> {
         }
         self.bump();
         let else_branch = self.parse_expr()?;
-        Ok(Expr::If {
-            cond: Box::new(cond),
-            then_branch: Box::new(then_branch),
-            else_branch: Box::new(else_branch),
-        })
+        Ok(self.spanned(
+            ExprKind::If {
+                cond: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            start,
+        ))
     }
 
     fn parse_or(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let mut left = self.parse_and()?;
         while self.peek().kind == TokenKind::PipePipe {
             self.bump();
             let right = self.parse_and()?;
-            left = Expr::Call {
-                target: "#c.or".into(),
-                args: vec![left, right],
-            };
+            left = self.spanned(
+                ExprKind::Call {
+                    target: "#c.or".into(),
+                    args: vec![left, right],
+                },
+                start,
+            );
         }
         Ok(left)
     }
 
     fn parse_and(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let mut left = self.parse_compare()?;
         while self.peek().kind == TokenKind::AmpAmp {
             self.bump();
             let right = self.parse_compare()?;
-            left = Expr::Call {
-                target: "#c.and".into(),
-                args: vec![left, right],
-            };
+            left = self.spanned(
+                ExprKind::Call {
+                    target: "#c.and".into(),
+                    args: vec![left, right],
+                },
+                start,
+            );
         }
         Ok(left)
     }
 
     fn parse_compare(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let left = self.parse_add()?;
         let op = match self.peek().kind {
             TokenKind::EqEq => Some("#c.eq"),
@@ -832,34 +886,44 @@ impl<'a> Parser<'a> {
         if let Some(target) = op {
             self.bump();
             let right = self.parse_add()?;
-            Ok(Expr::Call {
-                target: target.into(),
-                args: vec![left, right],
-            })
+            Ok(self.spanned(
+                ExprKind::Call {
+                    target: target.into(),
+                    args: vec![left, right],
+                },
+                start,
+            ))
         } else {
             Ok(left)
         }
     }
 
     fn parse_add(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let mut left = self.parse_term()?;
         loop {
             match self.peek().kind {
                 TokenKind::Plus => {
                     self.bump();
                     let right = self.parse_term()?;
-                    left = Expr::Call {
-                        target: "#c.add".into(),
-                        args: vec![left, right],
-                    };
+                    left = self.spanned(
+                        ExprKind::Call {
+                            target: "#c.add".into(),
+                            args: vec![left, right],
+                        },
+                        start,
+                    );
                 }
                 TokenKind::Minus => {
                     self.bump();
                     let right = self.parse_term()?;
-                    left = Expr::Call {
-                        target: "#c.sub".into(),
-                        args: vec![left, right],
-                    };
+                    left = self.spanned(
+                        ExprKind::Call {
+                            target: "#c.sub".into(),
+                            args: vec![left, right],
+                        },
+                        start,
+                    );
                 }
                 _ => break,
             }
@@ -868,24 +932,31 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_term(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let mut left = self.parse_power()?;
         loop {
             match self.peek().kind {
                 TokenKind::Star => {
                     self.bump();
                     let right = self.parse_power()?;
-                    left = Expr::Call {
-                        target: "#c.mul".into(),
-                        args: vec![left, right],
-                    };
+                    left = self.spanned(
+                        ExprKind::Call {
+                            target: "#c.mul".into(),
+                            args: vec![left, right],
+                        },
+                        start,
+                    );
                 }
                 TokenKind::Slash => {
                     self.bump();
                     let right = self.parse_power()?;
-                    left = Expr::Call {
-                        target: "#c.div".into(),
-                        args: vec![left, right],
-                    };
+                    left = self.spanned(
+                        ExprKind::Call {
+                            target: "#c.div".into(),
+                            args: vec![left, right],
+                        },
+                        start,
+                    );
                 }
                 _ => break,
             }
@@ -895,42 +966,55 @@ impl<'a> Parser<'a> {
 
     /// Right-associative `**` / pow.
     fn parse_power(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let left = self.parse_unary()?;
         if self.peek().kind == TokenKind::StarStar {
             self.bump();
             let right = self.parse_power()?;
-            Ok(Expr::Call {
-                target: "#c.pow".into(),
-                args: vec![left, right],
-            })
+            Ok(self.spanned(
+                ExprKind::Call {
+                    target: "#c.pow".into(),
+                    args: vec![left, right],
+                },
+                start,
+            ))
         } else {
             Ok(left)
         }
     }
 
     fn parse_unary(&mut self) -> Result<Expr> {
+        let start = self.mark();
         match self.peek().kind {
             TokenKind::Bang => {
                 self.bump();
                 let inner = self.parse_unary()?;
-                Ok(Expr::Call {
-                    target: "#c.not".into(),
-                    args: vec![inner],
-                })
+                Ok(self.spanned(
+                    ExprKind::Call {
+                        target: "#c.not".into(),
+                        args: vec![inner],
+                    },
+                    start,
+                ))
             }
             TokenKind::Minus => {
                 self.bump();
                 let inner = self.parse_unary()?;
-                Ok(Expr::Call {
-                    target: "#c.sub".into(),
-                    args: vec![Expr::Num(0.0), inner],
-                })
+                let zero = Expr::new(ExprKind::Num(0.0), Some(Span { start, end: start }));
+                Ok(self.spanned(
+                    ExprKind::Call {
+                        target: "#c.sub".into(),
+                        args: vec![zero, inner],
+                    },
+                    start,
+                ))
             }
             _ => self.parse_postfix(),
         }
     }
 
     fn parse_postfix(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let mut expr = self.parse_factor()?;
         while self.peek().kind == TokenKind::Dot {
             self.bump();
@@ -945,21 +1029,28 @@ impl<'a> Parser<'a> {
             }
             let field = self.bump().text.clone();
             validate_ident(&field, ft.line, ft.col)?;
-            expr = Expr::Field {
-                base: Box::new(expr),
-                field,
-            };
+            expr = self.spanned(
+                ExprKind::Field {
+                    base: Box::new(expr),
+                    field,
+                },
+                start,
+            );
         }
         Ok(expr)
     }
 
     fn parse_factor(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let t = self.peek().clone();
         match t.kind {
-            TokenKind::Number => Ok(Expr::Num(self.parse_number_lit()?)),
+            TokenKind::Number => {
+                let n = self.parse_number_lit()?;
+                Ok(self.spanned(ExprKind::Num(n), start))
+            }
             TokenKind::String => {
                 let s = self.bump().text.clone();
-                Ok(Expr::Str(s))
+                Ok(self.spanned(ExprKind::Str(s), start))
             }
             TokenKind::LBracket => self.parse_list_lit(),
             TokenKind::LBrace => self.parse_record_lit(),
@@ -968,11 +1059,11 @@ impl<'a> Parser<'a> {
                     let text = self.peek().text.clone();
                     if text == "true" {
                         self.bump();
-                        return Ok(Expr::Bool(true));
+                        return Ok(self.spanned(ExprKind::Bool(true), start));
                     }
                     if text == "false" {
                         self.bump();
-                        return Ok(Expr::Bool(false));
+                        return Ok(self.spanned(ExprKind::Bool(false), start));
                     }
                     if text == "if" || text == "then" || text == "else" || text == "match" {
                         return Err(Error::at(
@@ -988,10 +1079,13 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let args = self.parse_args()?;
                     self.expect(TokenKind::RParen)?;
-                    Ok(Expr::Call {
-                        target: path,
-                        args,
-                    })
+                    Ok(self.spanned(
+                        ExprKind::Call {
+                            target: path,
+                            args,
+                        },
+                        start,
+                    ))
                 } else if path.contains("::") {
                     Err(Error::at(
                         "parse",
@@ -1007,7 +1101,7 @@ impl<'a> Parser<'a> {
                         "bare address is not an expression; use #addr(...)",
                     ))
                 } else {
-                    Ok(Expr::Var(path))
+                    Ok(self.spanned(ExprKind::Var(path), start))
                 }
             }
             TokenKind::LParen => {
@@ -1026,6 +1120,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_list_lit(&mut self) -> Result<Expr> {
+        let start = self.mark();
         self.expect(TokenKind::LBracket)?;
         let mut elems = Vec::new();
         if self.peek().kind != TokenKind::RBracket {
@@ -1039,10 +1134,11 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RBracket)?;
-        Ok(Expr::List(elems))
+        Ok(self.spanned(ExprKind::List(elems), start))
     }
 
     fn parse_record_lit(&mut self) -> Result<Expr> {
+        let start = self.mark();
         let t0 = self.peek().clone();
         self.expect(TokenKind::LBrace)?;
         let mut fields = Vec::new();
@@ -1065,7 +1161,14 @@ impl<'a> Parser<'a> {
                     self.bump();
                     self.parse_expr()?
                 } else if matches!(self.peek().kind, TokenKind::Comma | TokenKind::RBrace) {
-                    Expr::Var(name.clone())
+                    // Punned field: the value is the name, spanning the name token.
+                    Expr::new(
+                        ExprKind::Var(name.clone()),
+                        Some(Span {
+                            start: name_tok.start,
+                            end: name_tok.end,
+                        }),
+                    )
                 } else {
                     return Err(Error::at(
                         "parse",
@@ -1099,7 +1202,7 @@ impl<'a> Parser<'a> {
                 "record literal needs at least one field",
             ));
         }
-        Ok(Expr::Record(fields))
+        Ok(self.spanned(ExprKind::Record(fields), start))
     }
 
     fn parse_args(&mut self) -> Result<Vec<Expr>> {

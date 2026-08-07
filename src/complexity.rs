@@ -1,4 +1,4 @@
-use crate::ast::{Complexity, Expr, Stmt};
+use crate::ast::{Complexity, Expr, ExprKind, Stmt};
 
 pub const MAX_NODES: usize = 32;
 pub const MAX_DEPTH: usize = 10;
@@ -6,13 +6,13 @@ pub const MAX_CALLS: usize = 12;
 
 pub fn measure(expr: &Expr) -> Complexity {
     fn walk(e: &Expr, depth: usize) -> Complexity {
-        match e {
-            Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) => Complexity {
+        match &e.kind {
+            ExprKind::Num(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) => Complexity {
                 nodes: 1,
                 depth,
                 calls: 0,
             },
-            Expr::List(elems) => {
+            ExprKind::List(elems) => {
                 let mut nodes = 1;
                 let mut calls = 0;
                 let mut max_d = depth;
@@ -28,7 +28,7 @@ pub fn measure(expr: &Expr) -> Complexity {
                     calls,
                 }
             }
-            Expr::Record(fields) => {
+            ExprKind::Record(fields) => {
                 let mut nodes = 1;
                 let mut calls = 0;
                 let mut max_d = depth;
@@ -44,7 +44,7 @@ pub fn measure(expr: &Expr) -> Complexity {
                     calls,
                 }
             }
-            Expr::Field { base, .. } => {
+            ExprKind::Field { base, .. } => {
                 let c = walk(base, depth + 1);
                 Complexity {
                     nodes: c.nodes + 1,
@@ -52,7 +52,7 @@ pub fn measure(expr: &Expr) -> Complexity {
                     calls: c.calls,
                 }
             }
-            Expr::Variant { payload, .. } => match payload {
+            ExprKind::Variant { payload, .. } => match payload {
                 None => Complexity {
                     nodes: 1,
                     depth,
@@ -67,7 +67,7 @@ pub fn measure(expr: &Expr) -> Complexity {
                     }
                 }
             },
-            Expr::Match { scrutinee, arms } => {
+            ExprKind::Match { scrutinee, arms } => {
                 let mut nodes = 1;
                 let mut calls = 0;
                 let mut max_d = depth;
@@ -87,7 +87,7 @@ pub fn measure(expr: &Expr) -> Complexity {
                     calls,
                 }
             }
-            Expr::If {
+            ExprKind::If {
                 cond,
                 then_branch,
                 else_branch,
@@ -107,7 +107,7 @@ pub fn measure(expr: &Expr) -> Complexity {
                     calls,
                 }
             }
-            Expr::Call { args, .. } => {
+            ExprKind::Call { args, .. } => {
                 let mut nodes = 1;
                 let mut calls = 1;
                 let mut max_d = depth;
@@ -123,7 +123,7 @@ pub fn measure(expr: &Expr) -> Complexity {
                     calls,
                 }
             }
-            Expr::Block { stmts, result } => {
+            ExprKind::Block { stmts, result } => {
                 let mut nodes = 1;
                 let mut calls = 0;
                 let mut max_d = depth;

@@ -1,30 +1,30 @@
-use crate::ast::{Expr, Stmt};
+use crate::ast::{Expr, ExprKind, Stmt};
 use crate::registry::Registry;
 use crate::value::format_num;
 
 pub fn render_raw(expr: &Expr) -> String {
-    match expr {
-        Expr::Num(n) => format_num(*n),
-        Expr::Bool(b) => b.to_string(),
-        Expr::Str(s) => format!("{s:?}"),
-        Expr::Var(p) => p.clone(),
-        Expr::List(elems) => {
+    match &expr.kind {
+        ExprKind::Num(n) => format_num(*n),
+        ExprKind::Bool(b) => b.to_string(),
+        ExprKind::Str(s) => format!("{s:?}"),
+        ExprKind::Var(p) => p.clone(),
+        ExprKind::List(elems) => {
             let inner: Vec<String> = elems.iter().map(render_raw).collect();
             format!("[{}]", inner.join(", "))
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             let inner: Vec<String> = fields
                 .iter()
                 .map(|(k, v)| format!("{k}: {}", render_raw(v)))
                 .collect();
             format!("{{ {} }}", inner.join(", "))
         }
-        Expr::Field { base, field } => format!("{}.{}", render_raw(base), field),
-        Expr::Variant { tag, payload } => match payload {
+        ExprKind::Field { base, field } => format!("{}.{}", render_raw(base), field),
+        ExprKind::Variant { tag, payload } => match payload {
             None => tag.clone(),
             Some(p) => format!("{tag}({})", render_raw(p)),
         },
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Match { scrutinee, arms } => {
             let as_: Vec<String> = arms
                 .iter()
                 .map(|a| {
@@ -37,7 +37,7 @@ pub fn render_raw(expr: &Expr) -> String {
                 .collect();
             format!("match {} {{ {} }}", render_raw(scrutinee), as_.join(", "))
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -47,11 +47,11 @@ pub fn render_raw(expr: &Expr) -> String {
             render_raw(then_branch),
             render_raw(else_branch)
         ),
-        Expr::Call { target, args } => {
+        ExprKind::Call { target, args } => {
             let inner: Vec<String> = args.iter().map(render_raw).collect();
             format!("{target}({})", inner.join(", "))
         }
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             let mut parts: Vec<String> = stmts
                 .iter()
                 .map(|s| match s {
@@ -66,28 +66,28 @@ pub fn render_raw(expr: &Expr) -> String {
 }
 
 pub fn render_labelled(expr: &Expr, reg: &Registry) -> String {
-    match expr {
-        Expr::Num(n) => format_num(*n),
-        Expr::Bool(b) => b.to_string(),
-        Expr::Str(s) => format!("{s:?}"),
-        Expr::Var(p) => p.clone(),
-        Expr::List(elems) => {
+    match &expr.kind {
+        ExprKind::Num(n) => format_num(*n),
+        ExprKind::Bool(b) => b.to_string(),
+        ExprKind::Str(s) => format!("{s:?}"),
+        ExprKind::Var(p) => p.clone(),
+        ExprKind::List(elems) => {
             let inner: Vec<String> = elems.iter().map(|e| render_labelled(e, reg)).collect();
             format!("[{}]", inner.join(", "))
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             let inner: Vec<String> = fields
                 .iter()
                 .map(|(k, v)| format!("{k}: {}", render_labelled(v, reg)))
                 .collect();
             format!("{{ {} }}", inner.join(", "))
         }
-        Expr::Field { base, field } => format!("{}.{}", render_labelled(base, reg), field),
-        Expr::Variant { tag, payload } => match payload {
+        ExprKind::Field { base, field } => format!("{}.{}", render_labelled(base, reg), field),
+        ExprKind::Variant { tag, payload } => match payload {
             None => tag.clone(),
             Some(p) => format!("{tag}({})", render_labelled(p, reg)),
         },
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Match { scrutinee, arms } => {
             let as_: Vec<String> = arms
                 .iter()
                 .map(|a| {
@@ -104,7 +104,7 @@ pub fn render_labelled(expr: &Expr, reg: &Registry) -> String {
                 as_.join(", ")
             )
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -114,7 +114,7 @@ pub fn render_labelled(expr: &Expr, reg: &Registry) -> String {
             render_labelled(then_branch, reg),
             render_labelled(else_branch, reg)
         ),
-        Expr::Call { target, args } => {
+        ExprKind::Call { target, args } => {
             let name = reg
                 .get(target)
                 .and_then(|b| b.label.clone())
@@ -165,7 +165,7 @@ pub fn render_labelled(expr: &Expr, reg: &Registry) -> String {
             let inner: Vec<String> = args.iter().map(|a| render_labelled(a, reg)).collect();
             format!("{name}({})", inner.join(", "))
         }
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             let mut parts: Vec<String> = stmts
                 .iter()
                 .map(|s| match s {

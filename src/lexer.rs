@@ -10,6 +10,9 @@ pub struct Token {
     /// Byte offset of this token's first character in the source.
     /// Lets the parser record spans so edits can splice structurally.
     pub start: usize,
+    /// Byte offset one past this token's last character. Together with `start`
+    /// this is what lets a diagnostic underline the exact text at fault.
+    pub end: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -55,7 +58,7 @@ pub enum TokenKind {
 }
 
 pub fn tokenize(src: &str) -> Result<Vec<Token>> {
-    let mut tokens = Vec::new();
+    let mut tokens: Vec<Token> = Vec::new();
     let chars: Vec<char> = src.chars().collect();
     // Byte offset of each char, so token positions survive multi-byte input.
     let mut byte_at: Vec<usize> = Vec::with_capacity(chars.len() + 1);
@@ -70,6 +73,14 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
     let mut col = 1;
 
     while i < chars.len() {
+        // Close the previous token: `i` has advanced past it, so the current
+        // offset is exactly one byte past its last character. Doing it here
+        // avoids threading an end through all 23 push sites.
+        if let Some(t) = tokens.last_mut() {
+            if t.end == usize::MAX {
+                t.end = byte_at[i];
+            }
+        }
         let start_line = line;
         let start_col = col;
         let start_byte = byte_at[i];
@@ -101,6 +112,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 2;
             col += 2;
@@ -114,6 +126,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     line: start_line,
                     col: start_col,
                     start: start_byte,
+                    end: usize::MAX,
                 });
                 i += 2;
                 col += 2;
@@ -126,6 +139,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     line: start_line,
                     col: start_col,
                     start: start_byte,
+                    end: usize::MAX,
                 });
                 i += 2;
                 col += 2;
@@ -137,6 +151,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 1;
             col += 1;
@@ -150,6 +165,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     line: start_line,
                     col: start_col,
                     start: start_byte,
+                    end: usize::MAX,
                 });
                 i += 2;
                 col += 2;
@@ -161,6 +177,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 1;
             col += 1;
@@ -174,6 +191,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     line: start_line,
                     col: start_col,
                     start: start_byte,
+                    end: usize::MAX,
                 });
                 i += 2;
                 col += 2;
@@ -185,6 +203,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 1;
             col += 1;
@@ -198,6 +217,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     line: start_line,
                     col: start_col,
                     start: start_byte,
+                    end: usize::MAX,
                 });
                 i += 2;
                 col += 2;
@@ -209,6 +229,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 1;
             col += 1;
@@ -221,6 +242,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 2;
             col += 2;
@@ -234,6 +256,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     line: start_line,
                     col: start_col,
                     start: start_byte,
+                    end: usize::MAX,
                 });
                 i += 2;
                 col += 2;
@@ -246,6 +269,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     line: start_line,
                     col: start_col,
                     start: start_byte,
+                    end: usize::MAX,
                 });
                 i += 2;
                 col += 2;
@@ -257,6 +281,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 1;
             col += 1;
@@ -287,6 +312,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             col += j - i;
             i = j;
@@ -320,6 +346,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             col += j - i;
             i = j;
@@ -363,6 +390,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             col += j - i + 1;
             i = j + 1;
@@ -386,6 +414,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             col += j - i;
             i = j;
@@ -403,6 +432,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             col += j - i;
             i = j;
@@ -416,6 +446,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 2;
             col += 2;
@@ -430,6 +461,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     line: start_line,
                     col: start_col,
                     start: start_byte,
+                    end: usize::MAX,
                 });
                 i += 2;
                 col += 2;
@@ -441,6 +473,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                 line: start_line,
                 col: start_col,
                 start: start_byte,
+                end: usize::MAX,
             });
             i += 1;
             col += 1;
@@ -475,17 +508,25 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
             line: start_line,
             col: start_col,
             start: start_byte,
+            end: usize::MAX,
         });
         i += 1;
         col += 1;
     }
 
+    // Close the final token, which the loop never got another pass to patch.
+    if let Some(t) = tokens.last_mut() {
+        if t.end == usize::MAX {
+            t.end = src.len();
+        }
+    }
     tokens.push(Token {
         kind: TokenKind::Eof,
         text: String::new(),
         line,
         col,
         start: src.len(),
+        end: src.len(),
     });
     Ok(tokens)
 }

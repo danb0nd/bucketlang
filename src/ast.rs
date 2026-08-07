@@ -126,8 +126,75 @@ pub struct MatchArm {
     pub body: Expr,
 }
 
+/// An expression plus where it came from.
+///
+/// The span is what lets a type or runtime error name a line and column instead
+/// of only a bucket address. It is carried through name resolution so a resolved
+/// body still points back at the source the user wrote.
+///
+/// `span` is `None` for nodes the compiler synthesizes (desugared `@test` calls,
+/// core stubs) — nothing in the source corresponds to them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
+}
+
+impl Expr {
+    pub fn new(kind: ExprKind, span: Option<Span>) -> Self {
+        Expr { kind, span }
+    }
+
+    /// A node with no source location — only for compiler-synthesized code.
+    pub fn synthetic(kind: ExprKind) -> Self {
+        Expr { kind, span: None }
+    }
+
+    /// Nearest span at or under this node, for errors about a node that was
+    /// itself synthesized but whose children came from real source.
+    pub fn any_span(&self) -> Option<Span> {
+        if self.span.is_some() {
+            return self.span;
+        }
+        self.children().into_iter().find_map(|c| c.any_span())
+    }
+
+    pub fn children(&self) -> Vec<&Expr> {
+        match &self.kind {
+            ExprKind::Num(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) => vec![],
+            ExprKind::List(xs) => xs.iter().collect(),
+            ExprKind::Record(fs) => fs.iter().map(|(_, e)| e).collect(),
+            ExprKind::Field { base, .. } => vec![base.as_ref()],
+            ExprKind::Variant { payload, .. } => payload.iter().map(|p| p.as_ref()).collect(),
+            ExprKind::Match { scrutinee, arms } => {
+                let mut v = vec![scrutinee.as_ref()];
+                v.extend(arms.iter().map(|a| &a.body));
+                v
+            }
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => vec![cond.as_ref(), then_branch.as_ref(), else_branch.as_ref()],
+            ExprKind::Call { args, .. } => args.iter().collect(),
+            ExprKind::Block { stmts, result } => {
+                let mut v: Vec<&Expr> = stmts
+                    .iter()
+                    .map(|s| match s {
+                        Stmt::Bind { value, .. } => value,
+                        Stmt::Run(e) => e,
+                    })
+                    .collect();
+                v.push(result.as_ref());
+                v
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum ExprKind {
     Num(f64),
     Bool(bool),
     Str(String),

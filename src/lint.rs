@@ -1,4 +1,4 @@
-use crate::ast::{Bucket, BucketKind, Expr, Stmt};
+use crate::ast::{Bucket, BucketKind, Expr, ExprKind, Stmt};
 use crate::registry::Registry;
 use std::collections::BTreeSet;
 
@@ -39,8 +39,8 @@ fn lint_bucket(b: &Bucket, out: &mut Vec<Warning>) {
 }
 
 fn lint_unused_locals(expr: &Expr, label: &str, addr: &str, out: &mut Vec<Warning>) {
-    match expr {
-        Expr::Block { stmts, result } => {
+    match &expr.kind {
+        ExprKind::Block { stmts, result } => {
             for (i, stmt) in stmts.iter().enumerate() {
                 match stmt {
                     Stmt::Bind { name, value } => {
@@ -66,34 +66,34 @@ fn lint_unused_locals(expr: &Expr, label: &str, addr: &str, out: &mut Vec<Warnin
             }
             lint_unused_locals(result, label, addr, out);
         }
-        Expr::Call { args, .. } => {
+        ExprKind::Call { args, .. } => {
             for a in args {
                 lint_unused_locals(a, label, addr, out);
             }
         }
-        Expr::List(elems) => {
+        ExprKind::List(elems) => {
             for e in elems {
                 lint_unused_locals(e, label, addr, out);
             }
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             for (_, v) in fields {
                 lint_unused_locals(v, label, addr, out);
             }
         }
-        Expr::Field { base, .. } => lint_unused_locals(base, label, addr, out),
-        Expr::Variant { payload, .. } => {
+        ExprKind::Field { base, .. } => lint_unused_locals(base, label, addr, out),
+        ExprKind::Variant { payload, .. } => {
             if let Some(p) = payload {
                 lint_unused_locals(p, label, addr, out);
             }
         }
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Match { scrutinee, arms } => {
             lint_unused_locals(scrutinee, label, addr, out);
             for a in arms {
                 lint_unused_locals(&a.body, label, addr, out);
             }
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -102,7 +102,7 @@ fn lint_unused_locals(expr: &Expr, label: &str, addr: &str, out: &mut Vec<Warnin
             lint_unused_locals(then_branch, label, addr, out);
             lint_unused_locals(else_branch, label, addr, out);
         }
-        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) => {}
+        ExprKind::Num(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) => {}
     }
 }
 
@@ -120,34 +120,34 @@ fn all_vars(expr: &Expr) -> BTreeSet<String> {
 }
 
 fn collect_vars(expr: &Expr, set: &mut BTreeSet<String>) {
-    match expr {
-        Expr::Var(name) => {
+    match &expr.kind {
+        ExprKind::Var(name) => {
             set.insert(name.clone());
         }
-        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => {}
-        Expr::List(elems) => {
+        ExprKind::Num(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
+        ExprKind::List(elems) => {
             for e in elems {
                 collect_vars(e, set);
             }
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             for (_, v) in fields {
                 collect_vars(v, set);
             }
         }
-        Expr::Field { base, .. } => collect_vars(base, set),
-        Expr::Variant { payload, .. } => {
+        ExprKind::Field { base, .. } => collect_vars(base, set),
+        ExprKind::Variant { payload, .. } => {
             if let Some(p) = payload {
                 collect_vars(p, set);
             }
         }
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Match { scrutinee, arms } => {
             collect_vars(scrutinee, set);
             for a in arms {
                 collect_vars(&a.body, set);
             }
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -156,12 +156,12 @@ fn collect_vars(expr: &Expr, set: &mut BTreeSet<String>) {
             collect_vars(then_branch, set);
             collect_vars(else_branch, set);
         }
-        Expr::Call { args, .. } => {
+        ExprKind::Call { args, .. } => {
             for a in args {
                 collect_vars(a, set);
             }
         }
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             for s in stmts {
                 match s {
                     Stmt::Bind { value, .. } => collect_vars(value, set),

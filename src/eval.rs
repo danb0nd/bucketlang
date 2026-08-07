@@ -1,4 +1,4 @@
-use crate::ast::{Expr, Stmt};
+use crate::ast::{Expr, ExprKind, Stmt};
 use crate::error::{Error, Result};
 use crate::registry::Registry;
 use crate::value::Value;
@@ -54,6 +54,8 @@ fn eval_bucket_depth(
     eval_expr(&bucket.body, &mut env, reg, out, addr, depth)
 }
 
+/// Evaluate `expr`, tagging any failure with the smallest expression that
+/// contains it, so a runtime error names a line rather than only a bucket.
 fn eval_expr(
     expr: &Expr,
     env: &mut HashMap<String, Value>,
@@ -62,36 +64,50 @@ fn eval_expr(
     from: &str,
     depth: usize,
 ) -> Result<Value> {
-    match expr {
-        Expr::Num(n) => Ok(Value::Num(*n)),
-        Expr::Bool(b) => Ok(Value::Bool(*b)),
-        Expr::Str(s) => Ok(Value::Str(s.clone())),
-        Expr::Var(name) => env
+    eval_expr_inner(expr, env, reg, out, from, depth).map_err(|e| {
+        e.fill(crate::error::Stage::Eval, expr.any_span(), from)
+            .with_bucket_label(reg.get(from).and_then(|b| b.label.clone()))
+    })
+}
+
+fn eval_expr_inner(
+    expr: &Expr,
+    env: &mut HashMap<String, Value>,
+    reg: &Registry,
+    out: &mut dyn Write,
+    from: &str,
+    depth: usize,
+) -> Result<Value> {
+    match &expr.kind {
+        ExprKind::Num(n) => Ok(Value::Num(*n)),
+        ExprKind::Bool(b) => Ok(Value::Bool(*b)),
+        ExprKind::Str(s) => Ok(Value::Str(s.clone())),
+        ExprKind::Var(name) => env
             .get(name)
             .cloned()
             .ok_or_else(|| Error::msg(format!("unbound name '{name}' in {from}"))),
-        Expr::List(elems) => {
+        ExprKind::List(elems) => {
             let mut vals = Vec::new();
             for e in elems {
                 vals.push(eval_expr(e, env, reg, out, from, depth)?);
             }
             Ok(Value::List(vals))
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             let mut map = BTreeMap::new();
             for (k, v) in fields {
                 map.insert(k.clone(), eval_expr(v, env, reg, out, from, depth)?);
             }
             Ok(Value::Record(map))
         }
-        Expr::Field { base, field } => {
+        ExprKind::Field { base, field } => {
             let rec = eval_expr(base, env, reg, out, from, depth)?;
             let map = rec.as_record().map_err(Error::msg)?;
             map.get(field)
                 .cloned()
                 .ok_or_else(|| Error::msg(format!("missing field '{field}' in {from}")))
         }
-        Expr::Variant { tag, payload } => {
+        ExprKind::Variant { tag, payload } => {
             let p = match payload {
                 None => None,
                 Some(e) => Some(Box::new(eval_expr(e, env, reg, out, from, depth)?)),
@@ -101,7 +117,7 @@ fn eval_expr(
                 payload: p,
             })
         }
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Match { scrutinee, arms } => {
             let v = eval_expr(scrutinee, env, reg, out, from, depth)?;
             let Value::Variant { tag, payload } = v else {
                 return Err(Error::msg(format!(
@@ -124,7 +140,7 @@ fn eval_expr(
                 "no match arm for tag '{tag}' in {from}"
             )))
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -136,14 +152,14 @@ fn eval_expr(
                 eval_expr(else_branch, env, reg, out, from, depth)
             }
         }
-        Expr::Call { target, args } => {
+        ExprKind::Call { target, args } => {
             let mut vals = Vec::new();
             for a in args {
                 vals.push(eval_expr(a, env, reg, out, from, depth)?);
             }
             eval_call(reg, target, &vals, out, depth)
         }
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             for stmt in stmts {
                 match stmt {
                     Stmt::Bind { name, value } => {

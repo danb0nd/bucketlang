@@ -1,4 +1,4 @@
-use crate::ast::{BucketKind, Expr};
+use crate::ast::{BucketKind, Expr, ExprKind};
 use crate::registry::Registry;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,14 +47,14 @@ pub fn build_graph(reg: &Registry) -> Graph {
 }
 
 fn collect_calls(expr: &Expr, out: &mut BTreeSet<String>) {
-    match expr {
-        Expr::Call { target, args } => {
+    match &expr.kind {
+        ExprKind::Call { target, args } => {
             out.insert(target.clone());
             for a in args {
                 collect_calls(a, out);
             }
         }
-        Expr::Block { stmts, result } => {
+        ExprKind::Block { stmts, result } => {
             for s in stmts {
                 match s {
                     crate::ast::Stmt::Bind { value, .. } => collect_calls(value, out),
@@ -63,29 +63,29 @@ fn collect_calls(expr: &Expr, out: &mut BTreeSet<String>) {
             }
             collect_calls(result, out);
         }
-        Expr::List(elems) => {
+        ExprKind::List(elems) => {
             for e in elems {
                 collect_calls(e, out);
             }
         }
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             for (_, v) in fields {
                 collect_calls(v, out);
             }
         }
-        Expr::Field { base, .. } => collect_calls(base, out),
-        Expr::Variant { payload, .. } => {
+        ExprKind::Field { base, .. } => collect_calls(base, out),
+        ExprKind::Variant { payload, .. } => {
             if let Some(p) = payload {
                 collect_calls(p, out);
             }
         }
-        Expr::Match { scrutinee, arms } => {
+        ExprKind::Match { scrutinee, arms } => {
             collect_calls(scrutinee, out);
             for a in arms {
                 collect_calls(&a.body, out);
             }
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -94,7 +94,7 @@ fn collect_calls(expr: &Expr, out: &mut BTreeSet<String>) {
             collect_calls(then_branch, out);
             collect_calls(else_branch, out);
         }
-        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) => {}
+        ExprKind::Num(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) => {}
     }
 }
 
