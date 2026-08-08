@@ -3,8 +3,8 @@
 //! This is language-side because every operation here needs the grammar: the
 //! splice cuts at a span the parser recorded, and the oracles rely on the
 //! registry's notion of bucket identity. What is *not* here is policy — how much
-//! context to retrieve, when to retry, which IR level to encode at. That belongs
-//! to a harness, which can evolve without touching the language.
+//! context to retrieve, when to retry, how to render any of it. That belongs to
+//! whatever is driving the edit.
 
 use crate::ast::BucketKind;
 use crate::error::{Error, Result};

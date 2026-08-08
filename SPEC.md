@@ -1,6 +1,8 @@
 # Bucketlang SPEC (v0.1)
 
-Expression-oriented language of **addressable buckets** (virtual memory slots) with contracts, descriptions, emergent call graphs, and a `bkt` CLI.
+A toy expression-oriented language of **addressable buckets** (virtual memory slots) with contracts, descriptions, emergent call graphs, and a `bkt` CLI.
+
+This is the syntax reference. For what the language is and why it exists, see [`README.md`](README.md).
 
 ## Slot model
 
@@ -209,8 +211,7 @@ bkt run file.bkt --arg hello          # Str / Bool / Num parsed from entry contr
 bkt inspect file.bkt                  # all layers
 bkt inspect file.bkt --graph --ast --json
 
-# LLM live loop (interpret path)
-bkt context file.bkt --bucket sum           # JSON: contract, body, neighborhood, @tests
+# replace one bucket's body (compile / atomicity / behaviour gates)
 bkt edit file.bkt --bucket sum --body '…'   # dry-run: recompile + run related tests
 bkt edit file.bkt --bucket sum --body '…' --write
 ```

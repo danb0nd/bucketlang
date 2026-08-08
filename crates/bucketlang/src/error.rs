@@ -6,9 +6,8 @@
 //! so the diagnostic carries them as *fields* and renders to text or JSON,
 //! rather than baking them into a sentence that has to be parsed back out.
 //!
-//! The `bucket` field is the load-bearing one for the edit loop: it is the
-//! address to feed straight back into `bkt context --bucket <addr>`, which is
-//! what keeps a fix scoped to one bucket instead of a file rewrite.
+//! The `bucket` field is the load-bearing one: it names the unit to fix, which
+//! is what lets a caller scope a fix to one bucket instead of the whole file.
 
 use crate::ast::Span;
 use serde::Serialize;

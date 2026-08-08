@@ -2,15 +2,13 @@
 members = ["crates/bucketlang", "crates/bkt"]
 resolver = "2"
 
-# The split exists so the language and the agent harness can move at different
-# speeds. `bucketlang` is the language: lexing, parsing, typing, evaluation, and
-# the grammar-aware operations an edit needs (splice by span, run a bucket's
-# tests). `bucket-harness` is the experiment on top: what context to retrieve,
-# how to encode it, when to retry, and what any of it costs in tokens.
+# `bucketlang` is the language: lexing, parsing, typing, evaluation, and the
+# grammar-aware operations an edit needs (splice by span, run a bucket's tests,
+# the atomicity oracle). `bkt` is the CLI over it, and holds nothing but
+# argument parsing and output formatting.
 #
-# Keeping them as separate crates makes the boundary real — the harness can only
-# reach what the language exports — without paying the coordination cost of two
-# repositories.
+# The split is so the library can be used without the CLI's opinions about how
+# to print things.
 
 [workspace.package]
 version = "0.1.0"

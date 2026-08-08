@@ -1,10 +1,10 @@
-# Language inventory (what we have)
+# Language inventory (what exists today)
 
-Snapshot of **bucketlang** after nested packages, `Option[T]`, pipes, JSON host, and LLM test feedback.
+Snapshot of **bucketlang** after nested packages, `Option[T]`, pipes, and the JSON host.
 
 ## One-sentence pitch
 
-Programs are **graphs of small typed functions (“buckets”)** with stable addresses, inline descriptions/tests, interpreted for an LLM edit loop, with a path to AOT binaries later.
+A toy language where programs are **graphs of small typed functions (“buckets”)** with sequential addresses and inline descriptions and tests, compiled to an in-memory IR and interpreted.
 
 ## Core model
 
@@ -70,7 +70,7 @@ In `std::core`: name helpers like `to_string_point` — **convention for LLMs**,
 |---|---|
 | `check` / `run` | Typecheck; tests + entry (`--json` for host) |
 | `inspect` | Tokens, AST, graph, … |
-| `context` / `edit` | LLM iterate loop |
+| `edit` | Replace one bucket's body behind the compile / atomicity / behaviour gates |
 
 ## Diagnostics
 
@@ -85,14 +85,14 @@ error[type_mismatch]: expected Num, found Str
 ```
 
 Each diagnostic carries `stage`, a stable `code`, `bucket` + `bucket_label`,
-`line`/`col`, `expected`/`found`, and a `hint` — as fields, so the edit loop
-routes on them without parsing prose. `bucket` is the one that matters most: it
-feeds straight back into `bkt context --bucket`, which is what keeps a fix
-scoped to one bucket instead of a file rewrite.
+`line`/`col`, `expected`/`found`, and a `hint` — as fields rather than prose, so
+a caller can route on them without regexing the message. `bucket` is the useful
+one: it names the unit to fix, not just the byte offset.
 
-## Not yet
+## Not implemented
 
 - Generic bucket signatures `foo[T](…)`
 - Compiler traits / method dispatch
-- IR codec levels L1–L5 (only L0, plain source, is implemented)
+- Short-circuiting `&&` / `||` (both sides always evaluate)
+- Integers — `Num` is `f64` throughout
 - AOT `bkt build`, heap/`Ptr`, package registry
