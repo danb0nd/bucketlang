@@ -39,8 +39,9 @@ three things a normal language doesn't separate —
 - **small bodies**, enforced by a complexity budget, so a bucket fits in a
   glance.
 
-The full write-up of that idea is in [`og_idea.md`](og_idea.md), kept as a
-historical record — the implementation diverged from it in a few places.
+The original write-up lived as private design notes; the implementation
+diverged from that sketch in a few places, and those notes are not part of
+this public repo.
 
 That experiment lives elsewhere now, and it turned out most of what it was
 chasing gets solved by prompt caching and diff-shaped edits in languages models

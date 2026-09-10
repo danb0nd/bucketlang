@@ -29,3 +29,6 @@ graph.png
 
 # Personal design notes (not part of the repo)
 og_idea.md
+
+# Local wrangler/dev secrets if ever used
+.dev.vars
